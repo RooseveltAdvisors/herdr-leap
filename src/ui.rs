@@ -66,7 +66,15 @@ fn render_body(app: &App, max_rows: usize) -> Vec<Line<'static>> {
         .iter()
         .enumerate()
         .take(max_rows)
-        .map(|(row, line)| render_row(row, line, &row_placements(app, row, line.chars().count()), anchor, theme))
+        .map(|(row, line)| {
+            render_row(
+                row,
+                line,
+                &row_placements(app, row, line.chars().count()),
+                anchor,
+                theme,
+            )
+        })
         .collect()
 }
 
@@ -130,7 +138,10 @@ fn draw_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
         width: area.width,
         height: 1,
     };
-    let search = app.search().map(|c| c.to_string()).unwrap_or_else(|| "-".to_string());
+    let search = app
+        .search()
+        .map(|c| c.to_string())
+        .unwrap_or_else(|| "-".to_string());
     let input = if app.input().is_empty() {
         "-".to_string()
     } else {

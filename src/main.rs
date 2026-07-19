@@ -108,11 +108,8 @@ fn run_extract(
     wrap_width: Option<usize>,
     settings: &herdr_leap::config::LeapSettings,
 ) -> Result<Outcome> {
-    let mut app = ExtractApp::from_visible_text_with_wrap_width(
-        text,
-        wrap_width,
-        settings.theme.clone(),
-    );
+    let mut app =
+        ExtractApp::from_visible_text_with_wrap_width(text, wrap_width, settings.theme.clone());
     log_state(&format!(
         "start mode=extract items={} wrap_width={wrap_width:?} copy_toast={}",
         app.total_count(),

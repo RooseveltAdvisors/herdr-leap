@@ -28,7 +28,7 @@ pub enum ExtractInput {
 }
 
 impl ExtractInput {
-    /// Map a crossterm-style control/printable char used by `main` into an input.
+    /// Map a control or printable character into an input for char-only drivers.
     pub fn from_char(ch: char) -> Self {
         match ch {
             ESC => Self::Esc,
@@ -285,20 +285,14 @@ mod tests {
     #[test]
     fn enter_copies_a_url_rejoined_across_a_soft_wrap() {
         let text = "Link https://wrap.example/split/path/to/\ncontinued.txt";
-        let mut a = ExtractApp::from_visible_text_with_wrap_width(
-            text,
-            Some(40),
-            Theme::default(),
-        );
+        let mut a = ExtractApp::from_visible_text_with_wrap_width(text, Some(40), Theme::default());
         for ch in "wrap.example".chars() {
             a.handle_input(ExtractInput::Char(ch));
         }
 
         assert_eq!(
             a.handle_input(ExtractInput::Enter),
-            Outcome::Copy(
-                "https://wrap.example/split/path/to/continued.txt".to_string()
-            )
+            Outcome::Copy("https://wrap.example/split/path/to/continued.txt".to_string())
         );
     }
 

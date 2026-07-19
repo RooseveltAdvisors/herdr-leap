@@ -170,7 +170,9 @@ impl App {
 
     fn resolve(&mut self, pos: Pos, is_end: bool) -> Outcome {
         if is_end {
-            let anchor = self.anchor.expect("PickEnd requires an anchor from PickStart");
+            let anchor = self
+                .anchor
+                .expect("PickEnd requires an anchor from PickStart");
             return Outcome::Copy(self.buffer.extract_region(anchor, pos));
         }
         self.anchor = Some(pos);
@@ -374,7 +376,7 @@ mod tests {
     fn unknown_hint_prefix_resets_input_with_message() {
         let mut a = app("banana");
         a.handle_char('a'); // PickStart, single-char labels from the "asdf..." alphabet
-        // 'g' is late in the alphabet; with 3 targets no label starts with 'g'.
+                            // 'g' is late in the alphabet; with 3 targets no label starts with 'g'.
         assert_eq!(a.handle_char('g'), Outcome::Continue);
         assert_eq!(a.input(), "");
         assert_eq!(a.message(), Some("no hint starts with g"));

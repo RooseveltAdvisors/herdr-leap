@@ -3,7 +3,7 @@ name = "herdr-leap"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.85"
-description = "EasyMotion/leap-style character jump and select-to-copy for Herdr"
+description = "Leap-style region copy and visible-buffer token extraction for Herdr"
 license = "MIT"
 authors = ["Roosevelt Advisors"]
 
