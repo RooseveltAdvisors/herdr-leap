@@ -82,26 +82,62 @@ force_focus() {
   sleep 0.05
 }
 
+LAST_LOG_ID=""
+
+plugin_logs() {
+  H plugin log list --plugin RooseveltAdvisors.herdr-leap --limit 50
+}
+
 last_log_stdout() {
-  H plugin log list --plugin RooseveltAdvisors.herdr-leap --limit 1 \
-    | jq -r '.result.logs[0].stdout // empty' | tr -d '\r' | sed 's/[[:space:]]*$//'
+  plugin_logs | jq -r --arg log_id "$LAST_LOG_ID" '
+    [.result.logs[]? | select(.log_id == $log_id)][0].stdout // empty
+  ' | tr -d '\r' | sed 's/[[:space:]]*$//'
 }
 
 last_log_status() {
-  H plugin log list --plugin RooseveltAdvisors.herdr-leap --limit 1 \
-    | jq -r '.result.logs[0].status // "missing"'
+  plugin_logs | jq -r --arg log_id "$LAST_LOG_ID" '
+    [.result.logs[]? | select(.log_id == $log_id)][0].status // "missing"
+  '
+}
+
+last_log_details() {
+  plugin_logs | jq -r --arg log_id "$LAST_LOG_ID" '
+    [.result.logs[]? | select(.log_id == $log_id)][0] as $log
+    | if $log == null then "log missing"
+      else "status=\($log.status) error=\($log.error // "") stderr=\($log.stderr // "") stdout=\($log.stdout // "")"
+      end
+  ' | tr -d '\r'
 }
 
 invoke() {
-  local action=$1
-  H plugin action invoke "RooseveltAdvisors.herdr-leap.${action}" >/dev/null
-  local i
-  for i in $(seq 1 40); do
-    local st
+  local action=$1 response st i
+  if ! response=$(H plugin action invoke "RooseveltAdvisors.herdr-leap.${action}"); then
+    echo "FAIL $action: plugin action invocation failed" >&2
+    return 1
+  fi
+  if ! LAST_LOG_ID=$(jq -er '.result.log.log_id | strings | select(length > 0)' <<<"$response"); then
+    echo "FAIL $action: invocation returned no log id: $response" >&2
+    return 1
+  fi
+
+  for i in $(seq 1 100); do
     st=$(last_log_status)
-    [[ "$st" != "running" ]] && break
-    sleep 0.05
+    case "$st" in
+      succeeded) return 0 ;;
+      running|missing) sleep 0.05 ;;
+      failed)
+        echo "FAIL $action: $(last_log_details)" >&2
+        return 1
+        ;;
+      *)
+        echo "FAIL $action: unexpected log status '$st'" >&2
+        return 1
+        ;;
+    esac
   done
+
+  echo "FAIL $action: timed out waiting for log $LAST_LOG_ID: $(last_log_details)" >&2
+  return 1
 }
 
 assert_eq() {
