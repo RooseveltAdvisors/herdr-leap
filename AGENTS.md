@@ -19,8 +19,8 @@ Both emit OSC 52 for Herdr to forward. Do not collapse the two actions onto one 
 - `src/leap.rs` owns the pure leap logic: the `WrappedBuffer` coordinate model, character search
   (smartcase), and **region extraction** (`extract_region`) from anchor to extent. This is the
   load-bearing leap module — keep it covered by unit tests.
-- `src/extract.rs` owns pure visible-buffer token extraction (soft-wrap rejoin, bounded filters,
-  reverse+dedupe). Load-bearing for the extract action — keep it covered by unit tests.
+- `src/extract.rs` owns pure visible-buffer token extraction (hard-boundary preservation, bounded
+  filters, reverse+dedupe). Load-bearing for the extract action — keep it covered by unit tests.
 - `src/extract_app.rs` owns the extract typeahead state machine; `src/extract_ui.rs` renders it.
 - `src/app.rs` owns the leap state machine (`Phase::AwaitSearch | PickStart | PickEnd`),
   hint input handling, and shared `Outcome` transitions (`Continue`, `Copy(String)`, `Cancel`).

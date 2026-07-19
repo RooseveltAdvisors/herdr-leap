@@ -1,7 +1,7 @@
 //! Visible-buffer token extraction (extrakto-parity subset).
 //!
-//! Pure logic: soft-wrap rejoining of already-laid-out visual rows, then bounded
-//! URL / path / quote / word extraction with reverse + ordered dedupe. No socket or TTY.
+//! Pure logic: bounded URL / path / quote / word extraction from visible text with
+//! reverse + ordered dedupe. No socket or TTY.
 
 use regex::Regex;
 use std::collections::HashSet;
@@ -26,45 +26,12 @@ pub struct ExtractItem {
 
 const MIN_LENGTH: usize = 5;
 
-/// Rejoin soft-wrapped visual rows from a Herdr `pane.read` visible dump.
-///
-/// Herdr already breaks lines at the pane width. A row is treated as a soft-wrap
-/// continuation of the previous row when the previous row's character count equals
-/// `wrap_width` (the same char-based wrap model `WrappedBuffer` uses). Hard breaks
-/// stay as `\n`.
-pub fn flatten_visible(text: &str, wrap_width: Option<usize>) -> String {
-    let lines: Vec<&str> = if text.is_empty() {
-        Vec::new()
-    } else {
-        text.lines().collect()
-    };
-    if lines.is_empty() {
-        return String::new();
-    }
-
-    let mut out = String::new();
-    for (i, line) in lines.iter().enumerate() {
-        if i > 0 {
-            let prev = lines[i - 1];
-            let soft = wrap_width
-                .filter(|w| *w > 0)
-                .is_some_and(|w| prev.chars().count() == w);
-            if !soft {
-                out.push('\n');
-            }
-        }
-        out.push_str(line);
-    }
-    out
-}
-
 /// Extract the v1 item set from already-visible pane text.
 ///
 /// Default list = path ∪ url ∪ quote ∪ s-quote ∪ word (min length 5), reversed so
 /// lower/more-recent screen content appears first, then deduped preserving order.
-pub fn extract_items_from_visible_text(text: &str, wrap_width: Option<usize>) -> Vec<ExtractItem> {
-    let flat = flatten_visible(text, wrap_width);
-    extract_items_from_flat(&flat)
+pub fn extract_items_from_visible_text(text: &str) -> Vec<ExtractItem> {
+    extract_items_from_flat(text)
 }
 
 fn extract_items_from_flat(text: &str) -> Vec<ExtractItem> {
@@ -104,11 +71,9 @@ fn filter_paths(text: &str) -> Vec<ExtractItem> {
     // Haystack is prefixed with newline so column-0 paths still match.
     static RE: OnceLock<Regex> = OnceLock::new();
     let re = RE.get_or_init(|| {
-        // Character class carefully escaped for the Rust regex crate:
-        // lead-in whitespace / quotes / brackets, then capture the path.
         Regex::new(concat!(
             r#"(?i)(?:[\t\n "'(\[<':]|^)"#,
-            r#"((?:~|/)?[-~A-Za-z0-9_+,.]+(?:/[-~A-Za-z0-9_+,.]+)+/?)"#,
+            r#"((?:~|/)?[-~A-Za-z0-9_+,.]+/[^ \t\n\r|:"'$%&)>\]]*)"#,
         ))
         .expect("path regex")
     });
@@ -159,12 +124,18 @@ fn filter_words(text: &str) -> Vec<ExtractItem> {
         Regex::new(r"[^\]\[(){}=$\u{2500}-\u{27BF}\u{E000}-\u{F8FF}⋅↴│ \t\n\r]+")
             .expect("word regex")
     });
-    let strip: &[char] = &[
+    let lstrip: &[char] = &[
+        ',', ':', ';', '(', ')', '[', ']', '{', '}', '<', '>', '\'', '"', '|',
+    ];
+    let rstrip: &[char] = &[
         ',', ':', ';', '(', ')', '[', ']', '{', '}', '<', '>', '\'', '"', '|', '.',
     ];
     let mut out = Vec::new();
     for m in re.find_iter(text) {
-        let item = m.as_str().trim_matches(strip);
+        let item = m
+            .as_str()
+            .trim_start_matches(lstrip)
+            .trim_end_matches(rstrip);
         if item.chars().count() < MIN_LENGTH {
             continue;
         }
@@ -246,7 +217,7 @@ curl https://cdn.example.org/v2/asset.tar.gz
 
     #[test]
     fn extracts_urls_paths_quotes_words_from_fixture() {
-        let items = extract_items_from_visible_text(fixture_visible(), None);
+        let items = extract_items_from_visible_text(fixture_visible());
         let t = texts(&items);
         for expected in [
             "https://example.com/docs/api?v=1",
@@ -267,34 +238,31 @@ curl https://cdn.example.org/v2/asset.tar.gz
     }
 
     #[test]
-    fn soft_wrapped_path_is_rejoined() {
-        // Previous row is exactly wrap_width chars → next row is a soft continuation.
-        let line1 = "Config at ~/projects/herdr-leap/config.toml and /var/";
-        let width = line1.chars().count();
-        let text = format!("{line1}\nlog/herdr/server.log\nother line");
-        let flat = flatten_visible(&text, Some(width));
-        assert!(
-            flat.contains("~/projects/herdr-leap/config.toml and /var/log/herdr/server.log"),
-            "flat={flat:?}"
-        );
-        let items = extract_items_from_visible_text(&text, Some(width));
+    fn exact_width_rows_are_not_joined_without_wrap_metadata() {
+        let items = extract_items_from_visible_text("abcde\nfghij");
         let t = texts(&items);
-        assert!(
-            t.iter()
-                .any(|s| s.contains("~/projects/herdr-leap/config.toml")),
-            "missing home path in {t:?}"
-        );
-        assert!(
-            t.iter().any(|s| {
-                *s == "/var/log/herdr/server.log" || s.contains("/var/log/herdr/server.log")
-            }),
-            "missing joined absolute path in {t:?}"
-        );
+        assert!(t.contains(&"abcde"), "got {t:?}");
+        assert!(t.contains(&"fghij"), "got {t:?}");
+        assert!(!t.contains(&"abcdefghij"), "got {t:?}");
+    }
+
+    #[test]
+    fn paths_capture_complete_extrakto_tail_tokens() {
+        let paths = filter_paths("/tmp/foo=bar/baz /tmp/über/file /tmp/@scope/package");
+        let paths: Vec<_> = paths.iter().map(|item| item.text.as_str()).collect();
+        for expected in ["/tmp/foo=bar/baz", "/tmp/über/file", "/tmp/@scope/package"] {
+            assert!(
+                paths.contains(&expected),
+                "missing {expected:?} in {paths:?}"
+            );
+        }
+        assert!(!paths.contains(&"/tmp/foo"), "truncated path in {paths:?}");
+        assert!(!paths.contains(&"/tmp/"), "truncated path in {paths:?}");
     }
 
     #[test]
     fn min_length_5_drops_short_words() {
-        let items = extract_items_from_visible_text("short hi ordinary-long-word-here", None);
+        let items = extract_items_from_visible_text("short hi ordinary-long-word-here");
         let t = texts(&items);
         assert!(!t.contains(&"hi"));
         assert!(t.contains(&"ordinary-long-word-here"));
@@ -306,7 +274,7 @@ curl https://cdn.example.org/v2/asset.tar.gz
     fn dedupes_preserving_order_after_reverse() {
         let text =
             "see /tmp/alpha/file.txt once\nand /tmp/alpha/file.txt twice\nzz-bottom-unique-token";
-        let items = extract_items_from_visible_text(text, None);
+        let items = extract_items_from_visible_text(text);
         let paths: Vec<_> = items
             .iter()
             .filter(|i| i.text.contains("/tmp/alpha/file.txt"))
@@ -326,21 +294,17 @@ curl https://cdn.example.org/v2/asset.tar.gz
     }
 
     #[test]
-    fn word_strips_trailing_punctuation() {
-        let items = extract_items_from_visible_text("install the plugin.", None);
+    fn word_uses_distinct_leading_and_trailing_strip_sets() {
+        let items = extract_items_from_visible_text("edit .gitignore with plugin.");
         let t = texts(&items);
+        assert!(t.contains(&".gitignore"), "got {t:?}");
+        assert!(!t.contains(&"gitignore"), "got {t:?}");
         assert!(t.contains(&"plugin"), "got {t:?}");
         assert!(!t.iter().any(|s| s.ends_with('.')), "got {t:?}");
     }
 
     #[test]
-    fn flatten_without_width_keeps_hard_breaks() {
-        let flat = flatten_visible("aaa\nbbb", None);
-        assert_eq!(flat, "aaa\nbbb");
-    }
-
-    #[test]
-    fn flatten_empty_is_empty() {
-        assert_eq!(flatten_visible("", Some(80)), "");
+    fn empty_visible_text_extracts_nothing() {
+        assert!(extract_items_from_visible_text("").is_empty());
     }
 }

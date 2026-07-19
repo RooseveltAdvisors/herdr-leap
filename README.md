@@ -29,7 +29,9 @@ walking a region.
 ## How extract works (`extract`)
 
 1. The overlay reads **only** the focused pane's **visible** buffer (`pane.read` `source=visible`).
-   Soft-wrapped rows are rejoined before matching so split paths/URLs stay whole.
+   Hard line boundaries are preserved. Herdr's visible-text API does not currently expose soft-wrap
+   metadata, so a token split by terminal wrapping remains split rather than risking corrupt text by
+   merging an exact-width hard line.
 2. Tokens are collected with a bounded extrakto-parity set: **url**, **path**, double/single
    **quote**, and **word** (min length 5). Results are reversed (prefer lower/more-recent screen
    content) and deduped.

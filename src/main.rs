@@ -35,21 +35,23 @@ fn run() -> Result<()> {
         .context("HERDR_PLUGIN_CONTEXT_JSON did not include focused_pane_id")?;
     let mut client = SocketClient::connect(Path::new(&socket_path))?;
     let text = client.read_visible_pane(&pane_id)?;
-    let wrap_width = match client.visible_pane_width(&pane_id) {
-        Ok(width) => Some(visible_wrap_width(width)),
-        Err(err) => {
-            log_state(&format!("pane_width_unavailable: {err:#}"));
-            None
-        }
-    };
 
     let config_dir = std::env::var_os("HERDR_PLUGIN_CONFIG_DIR");
     let settings = load_leap_settings(config_dir.as_deref().map(Path::new))?;
     let copy_toast = settings.copy_toast;
 
     let outcome = match mode {
-        RunMode::Leap => run_leap(&text, wrap_width, &settings)?,
-        RunMode::Extract => run_extract(&text, wrap_width, &settings)?,
+        RunMode::Leap => {
+            let wrap_width = match client.visible_pane_width(&pane_id) {
+                Ok(width) => Some(visible_wrap_width(width)),
+                Err(err) => {
+                    log_state(&format!("pane_width_unavailable: {err:#}"));
+                    None
+                }
+            };
+            run_leap(&text, wrap_width, &settings)?
+        }
+        RunMode::Extract => run_extract(&text, &settings)?,
     };
     log_state(&format!("outcome={outcome:?}"));
 
@@ -103,14 +105,10 @@ fn run_leap(
     }
 }
 
-fn run_extract(
-    text: &str,
-    wrap_width: Option<usize>,
-    settings: &herdr_leap::config::LeapSettings,
-) -> Result<Outcome> {
-    let mut app = ExtractApp::from_visible_text(text, wrap_width, settings.theme.clone());
+fn run_extract(text: &str, settings: &herdr_leap::config::LeapSettings) -> Result<Outcome> {
+    let mut app = ExtractApp::from_visible_text(text, settings.theme.clone());
     log_state(&format!(
-        "start mode=extract items={} wrap_width={wrap_width:?} copy_toast={}",
+        "start mode=extract items={} copy_toast={}",
         app.total_count(),
         settings.copy_toast
     ));

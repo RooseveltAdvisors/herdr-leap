@@ -83,11 +83,8 @@ impl ExtractApp {
         app
     }
 
-    pub fn from_visible_text(text: &str, wrap_width: Option<usize>, theme: Theme) -> Self {
-        Self::new(
-            crate::extract::extract_items_from_visible_text(text, wrap_width),
-            theme,
-        )
+    pub fn from_visible_text(text: &str, theme: Theme) -> Self {
+        Self::new(crate::extract::extract_items_from_visible_text(text), theme)
     }
 
     pub fn handle_input(&mut self, input: ExtractInput) -> Outcome {
@@ -144,6 +141,7 @@ impl ExtractApp {
     }
 
     fn refilter(&mut self) {
+        let selected_item = self.filtered.get(self.selected).copied();
         let q = self.query.to_ascii_lowercase();
         self.filtered = self
             .items
@@ -163,8 +161,14 @@ impl ExtractApp {
             if !self.query.is_empty() {
                 self.message = Some("no matches".to_string());
             }
-        } else if self.selected >= self.filtered.len() {
-            self.selected = self.filtered.len() - 1;
+        } else {
+            self.selected = selected_item
+                .and_then(|item| {
+                    self.filtered
+                        .iter()
+                        .position(|&candidate| candidate == item)
+                })
+                .unwrap_or(0);
         }
     }
 
@@ -299,5 +303,28 @@ mod tests {
         a.handle_input(ExtractInput::Backspace);
         assert_eq!(a.query(), "alp");
         assert_eq!(a.filtered_count(), 2);
+    }
+
+    #[test]
+    fn refilter_preserves_selected_item_identity() {
+        let mut a = app(&["alpha-token", "beta-selected", "beta-later"]);
+        a.handle_input(ExtractInput::Down);
+        assert_eq!(a.selected_item().unwrap().text, "beta-selected");
+
+        a.handle_char('b');
+
+        assert_eq!(a.selected_index(), 0);
+        assert_eq!(a.selected_item().unwrap().text, "beta-selected");
+    }
+
+    #[test]
+    fn refilter_selects_first_result_when_selection_disappears() {
+        let mut a = app(&["alpha-selected", "beta-first", "beta-second"]);
+        assert_eq!(a.selected_item().unwrap().text, "alpha-selected");
+
+        a.handle_char('b');
+
+        assert_eq!(a.selected_index(), 0);
+        assert_eq!(a.selected_item().unwrap().text, "beta-first");
     }
 }
