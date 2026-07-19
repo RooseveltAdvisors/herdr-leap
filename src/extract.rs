@@ -6,6 +6,7 @@
 use regex::Regex;
 use std::collections::HashSet;
 use std::sync::OnceLock;
+use unicode_width::UnicodeWidthStr;
 
 /// Kind of extracted item (for tests and future filter cycling).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -32,6 +33,26 @@ const MIN_LENGTH: usize = 5;
 /// lower/more-recent screen content appears first, then deduped preserving order.
 pub fn extract_items_from_visible_text(text: &str) -> Vec<ExtractItem> {
     extract_items_from_flat(text)
+}
+
+/// Extract items after rejoining visible rows that fill the pane's wrap width.
+pub fn extract_items_from_visible_text_with_wrap_width(
+    text: &str,
+    wrap_width: Option<usize>,
+) -> Vec<ExtractItem> {
+    let Some(width) = wrap_width.filter(|width| *width > 0) else {
+        return extract_items_from_flat(text);
+    };
+
+    let rows: Vec<&str> = text.split('\n').collect();
+    let mut rejoined = String::with_capacity(text.len());
+    for (index, row) in rows.iter().enumerate() {
+        rejoined.push_str(row);
+        if index + 1 < rows.len() && UnicodeWidthStr::width(*row) != width {
+            rejoined.push('\n');
+        }
+    }
+    extract_items_from_flat(&rejoined)
 }
 
 fn extract_items_from_flat(text: &str) -> Vec<ExtractItem> {

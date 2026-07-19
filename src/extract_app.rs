@@ -87,6 +87,17 @@ impl ExtractApp {
         Self::new(crate::extract::extract_items_from_visible_text(text), theme)
     }
 
+    pub fn from_visible_text_with_wrap_width(
+        text: &str,
+        wrap_width: Option<usize>,
+        theme: Theme,
+    ) -> Self {
+        Self::new(
+            crate::extract::extract_items_from_visible_text_with_wrap_width(text, wrap_width),
+            theme,
+        )
+    }
+
     pub fn handle_input(&mut self, input: ExtractInput) -> Outcome {
         match input {
             ExtractInput::Esc | ExtractInput::CtrlC => Outcome::Cancel,
@@ -269,6 +280,26 @@ mod tests {
         a.handle_input(ExtractInput::Down);
         let outcome = a.handle_input(ExtractInput::Enter);
         assert_eq!(outcome, Outcome::Copy("second-item-here".to_string()));
+    }
+
+    #[test]
+    fn enter_copies_a_url_rejoined_across_a_soft_wrap() {
+        let text = "Link https://wrap.example/split/path/to/\ncontinued.txt";
+        let mut a = ExtractApp::from_visible_text_with_wrap_width(
+            text,
+            Some(40),
+            Theme::default(),
+        );
+        for ch in "wrap.example".chars() {
+            a.handle_input(ExtractInput::Char(ch));
+        }
+
+        assert_eq!(
+            a.handle_input(ExtractInput::Enter),
+            Outcome::Copy(
+                "https://wrap.example/split/path/to/continued.txt".to_string()
+            )
+        );
     }
 
     #[test]
