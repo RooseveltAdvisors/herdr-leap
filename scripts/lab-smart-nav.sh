@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Deterministic guarded-lab proof for herdr-leap smart-nav actions.
-# Requires HERDR_LAB_HELPER (fm-herdr-lab.sh). Never touches the default session.
+# Use only with fm-herdr-lab.sh and a named non-default session.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -120,7 +120,7 @@ invoke() {
     return 1
   fi
 
-  for i in $(seq 1 100); do
+  for ((i = 0; i < 100; i++)); do
     st=$(last_log_status)
     case "$st" in
       succeeded) return 0 ;;
@@ -157,7 +157,7 @@ fg_name() {
 wait_fg() {
   local pane=$1 want=$2
   local i name
-  for i in $(seq 1 40); do
+  for ((i = 0; i < 40; i++)); do
     name=$(fg_name "$pane")
     if [[ "$name" == "$want" ]]; then
       echo "$name"

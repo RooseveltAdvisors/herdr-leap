@@ -8,7 +8,7 @@ EasyMotion / leap-style **character jump + select-to-copy of an arbitrary screen
 |--------|--------|
 | `RooseveltAdvisors.herdr-leap.open` | Hint **any character**, then copy the **arbitrary region** between two points |
 | `RooseveltAdvisors.herdr-leap.extract` | List **copy-eligible tokens** (URLs, paths, quotes, words) from the **visible** pane and copy one |
-| `RooseveltAdvisors.herdr-leap.smart-{left,down,up,right}` | Tmux-style smart `Ctrl-h/j/k/l`: forward into Vim/Neovim/fzf, else focus the geometric neighbor |
+| `RooseveltAdvisors.herdr-leap.smart-{left,down,up,right}` | tmux-style smart `Ctrl-h/j/k/l`: forward into Vim/Neovim/fzf, else focus the geometric neighbor |
 
 Where copy plugins like `herdr-tiny-fingers` or `pluck` only hint detected tokens, **leap** still
 covers any character span. **extract** is the extrakto-style companion for grabbing a token without
@@ -47,20 +47,21 @@ shelling required).
 One-shot actions (no TUI / overlay):
 
 1. Read `pane.process_info` for the focused pane.
-2. If any foreground process name/argv0 basename matches the vim-family / fzf predicate
-   (`g?(view|l?n?vim?x?|fzf)(diff)?`, plus optional leading `.` / trailing `-wrapped`),
-   call `pane.send_keys` with the matching chord (`ctrl+h` / `ctrl+j` / `ctrl+k` / `ctrl+l`).
+2. If any foreground process name or argv0 basename matches the case-insensitive vim-family / fzf
+   predicate (`^g?\.?(view|l?n?vim?x?|fzf)(diff)?(-wrapped)?$`), call `pane.send_keys` with the
+   matching chord (`ctrl+h` / `ctrl+j` / `ctrl+k` / `ctrl+l`).
 3. Otherwise call `pane.focus_direction` for that direction (same tab only).
-4. No neighbor is a quiet no-op (`changed=false`). Stale pane ids fail fast with a bounded error.
+4. No neighbor is a quiet no-op (`changed=false`). Stale panes and nonresponsive API peers return
+   bounded errors instead of hanging.
 
 This matches terminal-mode tmux `vim-tmux-navigator` bindings. **Copy-mode** parity (always move
-pane on `Ctrl-h/j/k/l` while Herdr is in copy mode) requires a small Herdr-core change and is
+pane on `Ctrl-h/j/k/l` while Herdr is in copy mode) requires a Herdr-core change and is
 **not** part of this plugin — plugin actions do not receive keys in `Mode::Copy` today.
 
 Smart-nav does **not** replace Herdr's built-in prefix `focus_pane_*` actions (those stay
 unconditional). Bind the smart actions only if you want vim-aware direct chords.
 
-### Region semantics (the load-bearing leap behavior)
+## Region semantics (the load-bearing leap behavior)
 
 The visible buffer is modeled as **wrapped rows** at the pane width (the same coordinate model
 `herdr-tiny-fingers` uses). Anchor and extent are `(visual_row, col)` positions in that buffer.
@@ -73,7 +74,7 @@ The visible buffer is modeled as **wrapped rows** at the pane width (the same co
 - **Reversed selection:** if you label the extent above/before the anchor, the region is normalized
   automatically.
 
-### On "jump" mode
+## On "jump" mode
 
 A terminal multiplexer cannot move the *inner* program's cursor. So `mode = "jump"` is realized
 honestly as: set the anchor and immediately proceed to select-and-copy (identical to `mode =
@@ -146,7 +147,7 @@ command = "RooseveltAdvisors.herdr-leap.smart-right"
 description = "smart pane right (vim-aware)"
 ```
 
-Do not bind both leap keys to `open` — that collapses extract into the leap UI. Keep built-in
+Do not bind both overlay keys to `open` — that collapses extract into the leap UI. Keep built-in
 `focus_pane_*` on prefix chords (or your existing prefix layout). Invoke actions directly while
 developing with:
 
@@ -183,7 +184,7 @@ cargo build --release --locked
 cargo clippy --all-targets -- -D warnings
 ```
 
-Guarded lab integration (requires `fm-herdr-lab.sh`; never uses the default Herdr session):
+Guarded lab integration (requires `fm-herdr-lab.sh`; use only a named non-default Herdr session):
 
 ```bash
 HERDR_LAB_HELPER=/opt/ra/firstmate/bin/fm-herdr-lab.sh ./scripts/lab-smart-nav.sh
