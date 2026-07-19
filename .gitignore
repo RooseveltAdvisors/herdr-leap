@@ -7,3 +7,6 @@ target/
 
 # Runtime/debug logs
 *.log
+
+# Disposable local lab scratch (never ship)
+scratch/

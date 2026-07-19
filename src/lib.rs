@@ -7,5 +7,6 @@ pub mod extract_ui;
 pub mod herdr_client;
 pub mod hints;
 pub mod leap;
+pub mod smart_nav;
 pub mod theme;
 pub mod ui;

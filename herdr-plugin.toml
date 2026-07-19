@@ -2,7 +2,7 @@ id = "RooseveltAdvisors.herdr-leap"
 name = "herdr-leap"
 version = "0.1.0"
 min_herdr_version = "0.7.0"
-description = "EasyMotion/leap-style character jump and select-to-copy, plus visible-buffer token extract for Herdr"
+description = "EasyMotion/leap-style character jump and select-to-copy, visible-buffer token extract, and vim-aware smart pane navigation for Herdr"
 platforms = ["linux", "macos"]
 
 [[build]]
@@ -19,6 +19,30 @@ id = "extract"
 title = "Extract (copy visible tokens)"
 description = "List copy-eligible text from the visible pane and copy a selection"
 command = ["sh", "-c", "exec \"${HERDR_BIN_PATH:-herdr}\" plugin pane open --plugin RooseveltAdvisors.herdr-leap --entrypoint extract"]
+
+[[actions]]
+id = "smart-left"
+title = "Smart pane left"
+description = "Forward Ctrl-h into Vim/Neovim/fzf, else focus the left neighbor"
+command = ["./target/release/herdr-leap", "--mode", "smart-nav", "--direction", "left"]
+
+[[actions]]
+id = "smart-down"
+title = "Smart pane down"
+description = "Forward Ctrl-j into Vim/Neovim/fzf, else focus the down neighbor"
+command = ["./target/release/herdr-leap", "--mode", "smart-nav", "--direction", "down"]
+
+[[actions]]
+id = "smart-up"
+title = "Smart pane up"
+description = "Forward Ctrl-k into Vim/Neovim/fzf, else focus the up neighbor"
+command = ["./target/release/herdr-leap", "--mode", "smart-nav", "--direction", "up"]
+
+[[actions]]
+id = "smart-right"
+title = "Smart pane right"
+description = "Forward Ctrl-l into Vim/Neovim/fzf, else focus the right neighbor"
+command = ["./target/release/herdr-leap", "--mode", "smart-nav", "--direction", "right"]
 
 [[panes]]
 id = "leap"

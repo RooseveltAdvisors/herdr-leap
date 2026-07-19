@@ -1,9 +1,14 @@
-use std::io::{BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
+
+use crate::smart_nav::{Direction, ForegroundProcess};
+
+const RPC_IO_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Debug)]
 pub struct SocketClient {
@@ -15,6 +20,20 @@ pub struct SocketClient {
 pub struct NotificationResult {
     pub shown: bool,
     pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaneProcessInfo {
+    pub pane_id: String,
+    pub foreground_processes: Vec<ForegroundProcess>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FocusDirectionResult {
+    pub changed: bool,
+    pub reason: Option<String>,
+    pub source_pane_id: String,
+    pub focused_pane_id: Option<String>,
 }
 
 impl SocketClient {
@@ -87,18 +106,105 @@ impl SocketClient {
         })
     }
 
+    pub fn process_info(&mut self, pane_id: &str) -> Result<PaneProcessInfo> {
+        let result = self.call(
+            "pane.process_info",
+            json!({
+                "pane_id": pane_id
+            }),
+        )?;
+        let actual_type = result["type"].as_str().unwrap_or("<missing>");
+        if actual_type != "pane_process_info" {
+            bail!("expected pane_process_info result, got {actual_type}");
+        }
+        let info = &result["process_info"];
+        let returned_pane = info["pane_id"].as_str().unwrap_or(pane_id).to_string();
+        let processes = info["foreground_processes"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .map(|p| ForegroundProcess {
+                        name: p["name"].as_str().unwrap_or("").to_string(),
+                        argv0: p["argv0"].as_str().map(ToString::to_string),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        Ok(PaneProcessInfo {
+            pane_id: returned_pane,
+            foreground_processes: processes,
+        })
+    }
+
+    pub fn send_keys(&mut self, pane_id: &str, keys: &[&str]) -> Result<()> {
+        let result = self.call(
+            "pane.send_keys",
+            json!({
+                "pane_id": pane_id,
+                "keys": keys
+            }),
+        )?;
+        // pane.send_keys returns ResponseResult::Ok { type: "ok" }.
+        let actual_type = result["type"].as_str().unwrap_or("<missing>");
+        if actual_type != "ok" {
+            bail!("expected ok result from pane.send_keys, got {actual_type}");
+        }
+        Ok(())
+    }
+
+    pub fn focus_direction(
+        &mut self,
+        pane_id: &str,
+        direction: Direction,
+    ) -> Result<FocusDirectionResult> {
+        let result = self.call(
+            "pane.focus_direction",
+            json!({
+                "pane_id": pane_id,
+                "direction": direction.as_str()
+            }),
+        )?;
+        let actual_type = result["type"].as_str().unwrap_or("<missing>");
+        if actual_type != "pane_focus_direction" {
+            bail!("expected pane_focus_direction result, got {actual_type}");
+        }
+        let focus = &result["focus"];
+        Ok(FocusDirectionResult {
+            changed: focus["changed"].as_bool().unwrap_or(false),
+            reason: focus["reason"].as_str().map(ToString::to_string),
+            source_pane_id: focus["source_pane_id"]
+                .as_str()
+                .unwrap_or(pane_id)
+                .to_string(),
+            focused_pane_id: focus["focused_pane_id"].as_str().map(ToString::to_string),
+        })
+    }
+
     fn call(&mut self, method: &str, params: Value) -> Result<Value> {
         let id = self.next_id.to_string();
         self.next_id += 1;
 
-        let mut reader = BufReader::new(UnixStream::connect(&self.socket_path)?);
-        let request = json!({"id": id, "method": method, "params": params}).to_string();
-        let stream = reader.get_mut();
-        stream.write_all(request.as_bytes())?;
-        stream.write_all(b"\n")?;
+        let mut stream = UnixStream::connect(&self.socket_path)
+            .with_context(|| format!("cannot connect to Herdr API while calling {method}"))?;
+        stream
+            .set_read_timeout(Some(RPC_IO_TIMEOUT))
+            .with_context(|| format!("cannot set Herdr API read deadline for {method}"))?;
+        stream
+            .set_write_timeout(Some(RPC_IO_TIMEOUT))
+            .with_context(|| format!("cannot set Herdr API write deadline for {method}"))?;
 
+        let mut request = json!({"id": id, "method": method, "params": params}).to_string();
+        request.push('\n');
+        stream
+            .write_all(request.as_bytes())
+            .map_err(|error| rpc_io_error(method, "writing request", error))?;
+
+        let mut reader = BufReader::new(stream);
         let mut response = String::new();
-        if reader.read_line(&mut response)? == 0 {
+        let bytes_read = reader
+            .read_line(&mut response)
+            .map_err(|error| rpc_io_error(method, "reading response", error))?;
+        if bytes_read == 0 {
             bail!("Herdr closed the API connection before answering {method}");
         }
 
@@ -119,6 +225,21 @@ impl SocketClient {
     }
 }
 
+fn rpc_io_error(method: &str, operation: &str, error: io::Error) -> anyhow::Error {
+    let context = if matches!(
+        error.kind(),
+        io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+    ) {
+        format!(
+            "Herdr API timed out while {operation} for {method} after {} ms",
+            RPC_IO_TIMEOUT.as_millis()
+        )
+    } else {
+        format!("Herdr API failed while {operation} for {method}")
+    };
+    anyhow::Error::new(error).context(context)
+}
+
 pub fn context_focused_pane_id() -> Option<String> {
     let context = std::env::var("HERDR_PLUGIN_CONTEXT_JSON").ok()?;
     let context: Value = serde_json::from_str(&context).ok()?;
@@ -132,7 +253,8 @@ pub fn context_focused_pane_id() -> Option<String> {
 mod tests {
     use super::*;
     use std::os::unix::net::UnixListener;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::sync::mpsc;
+    use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
     #[test]
     fn show_notification_sends_notification_show_request() {
@@ -227,6 +349,199 @@ mod tests {
         );
         assert_eq!(client.visible_pane_width("pane-1").unwrap(), 80);
 
+        handle.join().unwrap();
+        let _ = std::fs::remove_file(socket_path);
+    }
+
+    #[test]
+    fn process_info_parses_foreground_names_and_argv0() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let socket_path = std::path::PathBuf::from(format!("/tmp/htf-pi-{unique}.sock"));
+        let _ = std::fs::remove_file(&socket_path);
+        let listener = UnixListener::bind(&socket_path).unwrap();
+
+        let handle = std::thread::spawn(move || {
+            let (_probe_stream, _) = listener.accept().unwrap();
+            let (mut stream, _) = listener.accept().unwrap();
+
+            let mut request = String::new();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            reader.read_line(&mut request).unwrap();
+            let json: Value = serde_json::from_str(&request).unwrap();
+            assert_eq!(json["method"], "pane.process_info");
+            assert_eq!(json["params"]["pane_id"], "w1:p2");
+
+            stream
+                .write_all(
+                    br#"{"id":"1","result":{"type":"pane_process_info","process_info":{"pane_id":"w1:p2","foreground_processes":[{"pid":1,"name":"nvim","argv0":"/usr/bin/nvim"}]}}}"#,
+                )
+                .unwrap();
+            stream.write_all(b"\n").unwrap();
+        });
+
+        let mut client = SocketClient::connect(&socket_path).unwrap();
+        let info = client.process_info("w1:p2").unwrap();
+        assert_eq!(info.pane_id, "w1:p2");
+        assert_eq!(info.foreground_processes.len(), 1);
+        assert_eq!(info.foreground_processes[0].name, "nvim");
+        assert_eq!(
+            info.foreground_processes[0].argv0.as_deref(),
+            Some("/usr/bin/nvim")
+        );
+        handle.join().unwrap();
+        let _ = std::fs::remove_file(socket_path);
+    }
+
+    #[test]
+    fn send_keys_and_focus_direction_use_supported_socket_methods() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let socket_path = std::path::PathBuf::from(format!("/tmp/htf-nav-{unique}.sock"));
+        let _ = std::fs::remove_file(&socket_path);
+        let listener = UnixListener::bind(&socket_path).unwrap();
+
+        let handle = std::thread::spawn(move || {
+            let (_probe_stream, _) = listener.accept().unwrap();
+
+            // send_keys
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = String::new();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            reader.read_line(&mut request).unwrap();
+            let json: Value = serde_json::from_str(&request).unwrap();
+            assert_eq!(json["method"], "pane.send_keys");
+            assert_eq!(json["params"]["pane_id"], "w1:p2");
+            assert_eq!(json["params"]["keys"], json!(["ctrl+h"]));
+            stream
+                .write_all(br#"{"id":"1","result":{"type":"ok"}}"#)
+                .unwrap();
+            stream.write_all(b"\n").unwrap();
+
+            // focus_direction
+            let (mut stream, _) = listener.accept().unwrap();
+            request.clear();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            reader.read_line(&mut request).unwrap();
+            let json: Value = serde_json::from_str(&request).unwrap();
+            assert_eq!(json["method"], "pane.focus_direction");
+            assert_eq!(json["params"]["pane_id"], "w1:p1");
+            assert_eq!(json["params"]["direction"], "right");
+            stream
+                .write_all(
+                    br#"{"id":"2","result":{"type":"pane_focus_direction","focus":{"changed":true,"source_pane_id":"w1:p1","focused_pane_id":"w1:p2"}}}"#,
+                )
+                .unwrap();
+            stream.write_all(b"\n").unwrap();
+
+            // focus_direction no neighbor
+            let (mut stream, _) = listener.accept().unwrap();
+            request.clear();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            reader.read_line(&mut request).unwrap();
+            let json: Value = serde_json::from_str(&request).unwrap();
+            assert_eq!(json["method"], "pane.focus_direction");
+            stream
+                .write_all(
+                    br#"{"id":"3","result":{"type":"pane_focus_direction","focus":{"changed":false,"reason":"no_neighbor","source_pane_id":"w1:p1","focused_pane_id":"w1:p1"}}}"#,
+                )
+                .unwrap();
+            stream.write_all(b"\n").unwrap();
+        });
+
+        let mut client = SocketClient::connect(&socket_path).unwrap();
+        client.send_keys("w1:p2", &["ctrl+h"]).unwrap();
+
+        let moved = client.focus_direction("w1:p1", Direction::Right).unwrap();
+        assert!(moved.changed);
+        assert_eq!(moved.focused_pane_id.as_deref(), Some("w1:p2"));
+        assert_eq!(moved.reason, None);
+
+        let edge = client.focus_direction("w1:p1", Direction::Left).unwrap();
+        assert!(!edge.changed);
+        assert_eq!(edge.reason.as_deref(), Some("no_neighbor"));
+
+        handle.join().unwrap();
+        let _ = std::fs::remove_file(socket_path);
+    }
+
+    #[test]
+    fn call_times_out_when_peer_never_responds() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let socket_path = std::path::PathBuf::from(format!("/tmp/htf-timeout-{unique}.sock"));
+        let _ = std::fs::remove_file(&socket_path);
+        let listener = UnixListener::bind(&socket_path).unwrap();
+        let (release_tx, release_rx) = mpsc::channel();
+
+        let handle = std::thread::spawn(move || {
+            let (_probe_stream, _) = listener.accept().unwrap();
+            let (stream, _) = listener.accept().unwrap();
+            let mut request = String::new();
+            let mut reader = BufReader::new(stream);
+            reader.read_line(&mut request).unwrap();
+            let json: Value = serde_json::from_str(&request).unwrap();
+            assert_eq!(json["method"], "pane.process_info");
+            let _ = release_rx.recv_timeout(RPC_IO_TIMEOUT * 3);
+        });
+
+        let mut client = SocketClient::connect(&socket_path).unwrap();
+        let started = Instant::now();
+        let result = client.process_info("w1:p2");
+        let elapsed = started.elapsed();
+        let _ = release_tx.send(());
+        handle.join().unwrap();
+        let _ = std::fs::remove_file(socket_path);
+
+        let err = result.unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("timed out while reading response for pane.process_info"),
+            "expected actionable timeout, got {msg}"
+        );
+        assert!(
+            elapsed < RPC_IO_TIMEOUT * 3,
+            "timeout exceeded its bound: {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn process_info_surfaces_pane_not_found_without_hanging() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let socket_path = std::path::PathBuf::from(format!("/tmp/htf-missing-{unique}.sock"));
+        let _ = std::fs::remove_file(&socket_path);
+        let listener = UnixListener::bind(&socket_path).unwrap();
+
+        let handle = std::thread::spawn(move || {
+            let (_probe_stream, _) = listener.accept().unwrap();
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = String::new();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            reader.read_line(&mut request).unwrap();
+            stream
+                .write_all(
+                    br#"{"id":"1","error":{"code":"pane_not_found","message":"pane not found"}}"#,
+                )
+                .unwrap();
+            stream.write_all(b"\n").unwrap();
+        });
+
+        let mut client = SocketClient::connect(&socket_path).unwrap();
+        let err = client.process_info("w1:p999").unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("pane_not_found"),
+            "expected pane_not_found, got {msg}"
+        );
         handle.join().unwrap();
         let _ = std::fs::remove_file(socket_path);
     }
