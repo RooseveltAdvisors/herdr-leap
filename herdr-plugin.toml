@@ -10,9 +10,9 @@ command = ["cargo", "build", "--release", "--locked"]
 
 [[actions]]
 id = "open"
-title = "Leap (jump + select-copy)"
-description = "Jump to any character and copy an arbitrary region"
-command = ["sh", "-c", "exec \"${HERDR_BIN_PATH:-herdr}\" plugin pane open --plugin RooseveltAdvisors.herdr-leap --entrypoint leap"]
+title = "Leap (jump)"
+description = "tmux-jump style: hint a word-start character and place the copy-mode cursor"
+command = ["sh", "-c", "exec \"${HERDR_BIN_PATH:-herdr}\" plugin pane open --plugin RooseveltAdvisors.herdr-leap --entrypoint leap --placement popup --width 100% --height 100%"]
 
 [[actions]]
 id = "extract"
@@ -23,7 +23,7 @@ command = ["sh", "-c", "exec \"${HERDR_BIN_PATH:-herdr}\" plugin pane open --plu
 [[panes]]
 id = "leap"
 title = "herdr-leap"
-placement = "overlay"
+placement = "popup"
 command = ["./target/release/herdr-leap"]
 
 [[panes]]

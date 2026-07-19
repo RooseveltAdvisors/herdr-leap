@@ -64,7 +64,8 @@ herdr plugin config-dir RooseveltAdvisors.herdr-leap
 - Prefer Herdr's socket API over shelling out to `herdr` from the running TUI.
 - Clipboard writes use OSC 52, not platform clipboard commands. Herdr forwards OSC 52 writes from
   plugin panes to the foreground client.
-- A multiplexer cannot move the inner program's cursor, so `mode = "jump"` is realized as
-  set-anchor-then-select-and-copy. Document this honestly; do not pretend to reposition a cursor.
+- `mode = "jump"` places Herdr's copy-mode cursor via `pane.copy_mode_jump` (not the child PTY
+  caret). Do not fake jump with OSC 52 region copy or synthetic PTY keys.
+  Leap pane placement must stay **popup** so the source viewport is not resized before capture.
 - Region rendering must keep the original visible pane lines and must not change line widths.
 - Do not commit `target/`, runtime logs, or local editor files.

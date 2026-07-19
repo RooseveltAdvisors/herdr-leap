@@ -16,7 +16,9 @@ use crate::theme::Theme;
 
 pub fn draw(frame: &mut Frame<'_>, app: &App) {
     let area = frame.area();
-    let body_rows = usize::from(area.height.saturating_sub(1));
+    // Render the full viewport height so buffer row indices stay 1:1 with source visual rows.
+    // The status line paints over the last screen row without shifting or dropping content.
+    let body_rows = usize::from(area.height);
     let lines = render_body(app, body_rows);
     frame.render_widget(Paragraph::new(lines), area);
     draw_status(frame, app, area);
@@ -61,10 +63,13 @@ fn render_body(app: &App, max_rows: usize) -> Vec<Line<'static>> {
     } else {
         None
     };
-    app.buffer()
-        .rows()
-        .iter()
+    let rows = app.buffer().rows();
+    // Prefer bottom-alignment if the buffer somehow exceeds the screen (stick-to-bottom parity),
+    // so the live viewport's bottom markers stay on-screen rather than dropping via a top take.
+    let start = rows.len().saturating_sub(max_rows);
+    rows.iter()
         .enumerate()
+        .skip(start)
         .take(max_rows)
         .map(|(row, line)| {
             render_row(
@@ -228,5 +233,45 @@ mod tests {
         let rendered: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(rendered, "aello");
         assert_eq!(rendered.chars().count(), "hello".chars().count());
+    }
+
+    #[test]
+    fn render_body_bottom_aligns_when_buffer_exceeds_height() {
+        use crate::app::{App, Mode};
+        use crate::leap::WrappedBuffer;
+        let text = (0..5)
+            .map(|i| format!("line-{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let app = App::new(
+            WrappedBuffer::from_text(&text, None),
+            Theme::default(),
+            Mode::Jump,
+        );
+        let lines = render_body(&app, 3);
+        assert_eq!(lines.len(), 3);
+        let rendered: Vec<String> = lines
+            .iter()
+            .map(|line| line.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        assert_eq!(rendered, vec!["line-2", "line-3", "line-4"]);
+    }
+
+    #[test]
+    fn render_body_keeps_all_rows_when_they_fit() {
+        use crate::app::{App, Mode};
+        use crate::leap::WrappedBuffer;
+        let app = App::new(
+            WrappedBuffer::from_text("top\nmiddle\nbottom", None),
+            Theme::default(),
+            Mode::Jump,
+        );
+        let lines = render_body(&app, 3);
+        assert_eq!(lines.len(), 3);
+        let rendered: Vec<String> = lines
+            .iter()
+            .map(|line| line.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        assert_eq!(rendered, vec!["top", "middle", "bottom"]);
     }
 }

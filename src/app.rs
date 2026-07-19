@@ -18,15 +18,17 @@ pub enum Outcome {
     Continue,
     /// Copy this text and exit.
     Copy(String),
+    /// Jump the source pane's copy-mode cursor to this visible buffer position and exit.
+    Jump(Pos),
     /// Abort with no copy.
     Cancel,
 }
 
 /// Interaction mode.
 ///
-/// A terminal multiplexer cannot move the *inner* program's cursor, so `Jump` cannot reposition
-/// anything. It is therefore realized identically to `Select`: set the anchor, then select and copy
-/// the region. The distinction is preserved for status display and future use only.
+/// - `Select` — two-point EasyMotion region copy (anchor then extent).
+/// - `Jump` — tmux-jump style single target: word-start labels, one pick yields `Outcome::Jump`.
+///   The entry point places the source pane's copy-mode cursor via Herdr's `pane.copy_mode_jump`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Mode {
     Select,
@@ -118,7 +120,10 @@ impl App {
     }
 
     fn begin_search(&mut self, ch: char) {
-        let matches = self.buffer.find_char(ch);
+        let matches = match self.mode {
+            Mode::Jump => self.buffer.find_word_start_char(ch),
+            Mode::Select => self.buffer.find_char(ch),
+        };
         if matches.is_empty() {
             self.search = None;
             self.message = Some(format!("no match for '{ch}'"));
@@ -169,6 +174,10 @@ impl App {
     }
 
     fn resolve(&mut self, pos: Pos, is_end: bool) -> Outcome {
+        if matches!(self.mode, Mode::Jump) {
+            // Jump never enters PickEnd; the first unique label is the destination.
+            return Outcome::Jump(pos);
+        }
         if is_end {
             let anchor = self
                 .anchor
@@ -253,6 +262,11 @@ mod tests {
     fn app(text: &str) -> App {
         let buffer = WrappedBuffer::from_text(text, None);
         App::new(buffer, Theme::default(), Mode::Select)
+    }
+
+    fn jump_app(text: &str) -> App {
+        let buffer = WrappedBuffer::from_text(text, None);
+        App::new(buffer, Theme::default(), Mode::Jump)
     }
 
     /// Drive the app to a resolved anchor by typing the label the app actually assigned to `pos`.
@@ -380,5 +394,41 @@ mod tests {
         assert_eq!(a.handle_char('g'), Outcome::Continue);
         assert_eq!(a.input(), "");
         assert_eq!(a.message(), Some("no hint starts with g"));
+    }
+
+    #[test]
+    fn jump_mode_uses_word_starts_and_returns_jump_on_first_label() {
+        let mut a = jump_app("two three button test");
+        assert_eq!(a.handle_char('t'), Outcome::Continue);
+        assert_eq!(a.phase(), Phase::PickStart);
+        // word starts only: two, three, test — not the mid-word t in button
+        assert_eq!(a.labels().len(), 3);
+
+        let target = Pos::new(0, 4); // 't' of "three"
+        let hint = label_for(&a, target);
+        assert_eq!(feed(&mut a, &hint), Outcome::Jump(target));
+        assert_ne!(a.phase(), Phase::PickEnd);
+    }
+
+    #[test]
+    fn jump_mode_esc_cancels_from_pick_start() {
+        let mut a = jump_app("target");
+        a.handle_char('t');
+        assert_eq!(a.phase(), Phase::PickStart);
+        assert_eq!(a.handle_char('\u{1b}'), Outcome::Cancel);
+    }
+
+    #[test]
+    fn select_mode_still_two_point_copies_after_jump_mode_exists() {
+        let mut a = app("one two three");
+        a.handle_char('t');
+        let anchor_hint = label_for(&a, Pos::new(0, 4));
+        assert_eq!(feed(&mut a, &anchor_hint), Outcome::Continue);
+        assert_eq!(a.phase(), Phase::PickEnd);
+        let extent_hint = label_for(&a, Pos::new(0, 8));
+        assert_eq!(
+            feed(&mut a, &extent_hint),
+            Outcome::Copy("two t".to_string())
+        );
     }
 }

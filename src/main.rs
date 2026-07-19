@@ -7,8 +7,10 @@ use herdr_leap::app::{App, Outcome};
 use herdr_leap::clipboard::copy_to_clipboard;
 use herdr_leap::config::load_leap_settings;
 use herdr_leap::extract_app::{ExtractApp, ExtractInput};
-use herdr_leap::herdr_client::{context_focused_pane_id, SocketClient};
-use herdr_leap::leap::WrappedBuffer;
+use herdr_leap::herdr_client::{
+    context_focused_pane_id, CopyModeJumpRequest, SocketClient, VisiblePaneSnapshot,
+};
+use herdr_leap::leap::{Pos, WrappedBuffer};
 
 fn main() -> ExitCode {
     match run() {
@@ -34,7 +36,16 @@ fn run() -> Result<()> {
     let pane_id = context_focused_pane_id()
         .context("HERDR_PLUGIN_CONTEXT_JSON did not include focused_pane_id")?;
     let mut client = SocketClient::connect(Path::new(&socket_path))?;
-    let text = client.read_visible_pane(&pane_id)?;
+
+    // Capture scroll identity before the visible read so jump can reject stale viewports.
+    let scroll = match client.pane_scroll(&pane_id) {
+        Ok(scroll) => Some(scroll),
+        Err(err) => {
+            log_state(&format!("pane_scroll_unavailable: {err:#}"));
+            None
+        }
+    };
+    let snapshot = client.read_visible_pane(&pane_id)?;
     let wrap_width = match client.visible_pane_width(&pane_id) {
         Ok(width) => Some(visible_wrap_width(width)),
         Err(err) => {
@@ -48,26 +59,89 @@ fn run() -> Result<()> {
     let copy_toast = settings.copy_toast;
 
     let outcome = match mode {
-        RunMode::Leap => run_leap(&text, wrap_width, &settings)?,
-        RunMode::Extract => run_extract(&text, wrap_width, &settings)?,
+        RunMode::Leap => run_leap(&snapshot.text, wrap_width, &settings)?,
+        RunMode::Extract => run_extract(&snapshot.text, wrap_width, &settings)?,
     };
     log_state(&format!("outcome={outcome:?}"));
 
-    if let Outcome::Copy(text) = outcome {
-        copy_to_clipboard(&text)?;
-        if copy_toast {
-            match client.show_notification(&copy_notification_title(&text)) {
-                Ok(result) if !result.shown => {
-                    log_state(&format!("notification_not_shown reason={}", result.reason));
-                }
-                Ok(_) => {}
-                Err(err) => {
-                    log_state(&format!("notification_error: {err:#}"));
+    match outcome {
+        Outcome::Copy(text) => {
+            copy_to_clipboard(&text)?;
+            if copy_toast {
+                match client.show_notification(&copy_notification_title(&text)) {
+                    Ok(result) if !result.shown => {
+                        log_state(&format!("notification_not_shown reason={}", result.reason));
+                    }
+                    Ok(_) => {}
+                    Err(err) => {
+                        log_state(&format!("notification_error: {err:#}"));
+                    }
                 }
             }
         }
+        Outcome::Jump(pos) => {
+            apply_jump(
+                &mut client,
+                &pane_id,
+                &snapshot,
+                scroll.as_ref(),
+                pos,
+                wrap_width,
+            )?;
+        }
+        Outcome::Continue | Outcome::Cancel => {}
     }
     Ok(())
+}
+
+fn apply_jump(
+    client: &mut SocketClient,
+    pane_id: &str,
+    snapshot: &VisiblePaneSnapshot,
+    scroll: Option<&herdr_leap::herdr_client::PaneScrollSnapshot>,
+    pos: Pos,
+    wrap_width: Option<usize>,
+) -> Result<()> {
+    let Some(scroll) = scroll else {
+        bail!(
+            "jump requires pane scroll metrics from pane.get; this Herdr build cannot place the copy-mode cursor"
+        );
+    };
+    let buffer = WrappedBuffer::from_text(&snapshot.text, wrap_width);
+    let request = CopyModeJumpRequest {
+        pane_id: pane_id.to_string(),
+        viewport_row: buffer.viewport_row(pos),
+        viewport_col: buffer.viewport_col(pos),
+        // Prefer the revision from the visible read used to choose the cell.
+        revision: snapshot.revision,
+        offset_from_bottom: scroll.offset_from_bottom,
+    };
+    log_state(&format!(
+        "jump pane_id={pane_id} row={} col={} revision={} offset={}",
+        request.viewport_row, request.viewport_col, request.revision, request.offset_from_bottom
+    ));
+    match client.copy_mode_jump(&request) {
+        Ok(result) => {
+            log_state(&format!(
+                "jump_ok pane_id={} row={} col={}",
+                result.pane_id, result.viewport_row, result.viewport_col
+            ));
+            Ok(())
+        }
+        Err(err) => {
+            let message = err.to_string();
+            if message.contains("unknown_method")
+                || message.contains("method_not_found")
+                || message.contains("not found")
+            {
+                bail!(
+                    "jump unavailable: this Herdr build lacks pane.copy_mode_jump ({message}). \
+                     Upgrade Herdr or use mode = \"select\" for region copy."
+                );
+            }
+            Err(err).context("pane.copy_mode_jump failed")
+        }
+    }
 }
 
 fn run_leap(
@@ -379,6 +453,14 @@ mod tests {
             open_joined.contains("--entrypoint leap"),
             "open must keep leap entrypoint: {open_joined}"
         );
+        assert!(
+            open_joined.contains("--placement popup"),
+            "open must use popup placement so the source pane is not resized: {open_joined}"
+        );
+        assert!(
+            open_joined.contains("--width 100%") && open_joined.contains("--height 100%"),
+            "open popup should cover the workspace: {open_joined}"
+        );
 
         let extract = actions
             .iter()
@@ -397,6 +479,11 @@ mod tests {
             extract_joined.contains("--entrypoint extract"),
             "extract must open extract entrypoint: {extract_joined}"
         );
+        // Extract may keep overlay; jump owns popup on the leap path only.
+        assert!(
+            !extract_joined.contains("--entrypoint leap"),
+            "extract must not open leap: {extract_joined}"
+        );
 
         let panes = value
             .get("panes")
@@ -413,6 +500,16 @@ mod tests {
         assert!(
             pane_ids.contains(&"extract"),
             "extract pane missing: {pane_ids:?}"
+        );
+
+        let leap_pane = panes
+            .iter()
+            .find(|p| p.get("id").and_then(|id| id.as_str()) == Some("leap"))
+            .unwrap();
+        assert_eq!(
+            leap_pane.get("placement").and_then(|p| p.as_str()),
+            Some("popup"),
+            "leap pane default placement must be popup"
         );
 
         let extract_pane = panes

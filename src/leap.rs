@@ -3,6 +3,8 @@
 //!
 //! No socket, TTY, or terminal state is touched here so every behavior is unit-testable.
 
+use unicode_width::UnicodeWidthChar;
+
 /// A position in the wrapped visible buffer: a visual row and a character column within that row.
 ///
 /// Ordering is row-major then column (derived from field order), which is exactly the order a
@@ -110,6 +112,56 @@ impl WrappedBuffer {
         hits
     }
 
+    /// Word-start positions matching `needle` (tmux-jump parity).
+    ///
+    /// A hit is a smartcase match of `needle` at a word character that is either at the start of a
+    /// hard line or immediately after a non-word character. Soft-wrap continuations do not create
+    /// a false start when the previous visual row ended inside the same word.
+    ///
+    /// Word characters are ASCII alphanumeric plus `_` (Ruby `\w` without Unicode classes).
+    pub fn find_word_start_char(&self, needle: char) -> Vec<Pos> {
+        let case_sensitive = needle.is_uppercase();
+        let mut hits = Vec::new();
+        for (row, line) in self.rows.iter().enumerate() {
+            let chars: Vec<char> = line.chars().collect();
+            for (col, &ch) in chars.iter().enumerate() {
+                if !is_word_char(ch) || !smartcase_matches(ch, needle, case_sensitive) {
+                    continue;
+                }
+                let is_start = if col > 0 {
+                    !is_word_char(chars[col - 1])
+                } else if row > 0 && self.continues_prev.get(row) == Some(&true) {
+                    let prev: Vec<char> = self.rows[row - 1].chars().collect();
+                    prev.last().map(|c| !is_word_char(*c)).unwrap_or(true)
+                } else {
+                    true
+                };
+                if is_start {
+                    hits.push(Pos::new(row, col));
+                }
+            }
+        }
+        hits
+    }
+
+    /// Terminal cell column for `pos` (display width), matching Herdr `viewport_col` semantics.
+    pub fn viewport_col(&self, pos: Pos) -> u16 {
+        let Some(line) = self.rows.get(pos.row) else {
+            return 0;
+        };
+        let width: usize = line
+            .chars()
+            .take(pos.col)
+            .map(|ch| UnicodeWidthChar::width(ch).unwrap_or(0))
+            .sum();
+        u16::try_from(width).unwrap_or(u16::MAX)
+    }
+
+    /// Visible viewport row for `pos` when buffer rows map 1:1 to the pane viewport.
+    pub fn viewport_row(&self, pos: Pos) -> u16 {
+        u16::try_from(pos.row).unwrap_or(u16::MAX)
+    }
+
     /// The inclusive region from `a` to `b`, normalized so the smaller position is the start.
     ///
     /// - Same row: the characters in the inclusive column span `[start.col ..= end.col]`, clamped
@@ -161,6 +213,10 @@ fn smartcase_matches(ch: char, needle: char, case_sensitive: bool) -> bool {
     } else {
         ch == needle || ch.to_lowercase().eq(needle.to_lowercase())
     }
+}
+
+fn is_word_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || ch == '_'
 }
 
 #[cfg(test)]
@@ -310,5 +366,49 @@ mod tests {
     fn find_char_multibyte_does_not_panic() {
         let b = buf("あいあ");
         assert_eq!(b.find_char('あ'), vec![Pos::new(0, 0), Pos::new(0, 2)]);
+    }
+
+    #[test]
+    fn find_word_start_char_matches_tmux_jump_word_starts_only() {
+        // "two three button test": word-start t at two/three/test; not mid-word in button.
+        let b = buf("two three button test");
+        assert_eq!(
+            b.find_word_start_char('t'),
+            vec![Pos::new(0, 0), Pos::new(0, 4), Pos::new(0, 17)]
+        );
+        assert!(b.find_char('t').len() > b.find_word_start_char('t').len());
+    }
+
+    #[test]
+    fn find_word_start_char_respects_hard_line_starts() {
+        let b = buf("alpha\ntarget");
+        assert_eq!(b.find_word_start_char('t'), vec![Pos::new(1, 0)]);
+    }
+
+    #[test]
+    fn find_word_start_char_does_not_false_start_on_soft_wrap_mid_word() {
+        // "targetword" wrapped at 6 -> "target" + "word"; 'w' is not a word start.
+        let b = WrappedBuffer::from_text("targetword", Some(6));
+        assert_eq!(b.rows(), &["target".to_string(), "word".to_string()]);
+        assert!(b.find_word_start_char('w').is_empty());
+        assert_eq!(b.find_word_start_char('t'), vec![Pos::new(0, 0)]);
+    }
+
+    #[test]
+    fn from_text_does_not_double_wrap_already_short_visible_rows() {
+        let visible = "HISTORY_LINE_055 decoy\nVISIBLE_TOP_MARKER\npad-visible-1\n/tmp prompt";
+        let b = WrappedBuffer::from_text(visible, Some(53));
+        assert_eq!(b.row_count(), 4);
+        assert_eq!(b.rows().last().unwrap(), "/tmp prompt");
+    }
+
+    #[test]
+    fn viewport_col_uses_display_width_for_wide_chars() {
+        let b = buf("aあb");
+        // 'a' width 1, 'あ' width 2, so char index 2 ('b') is cell col 3
+        assert_eq!(b.viewport_col(Pos::new(0, 0)), 0);
+        assert_eq!(b.viewport_col(Pos::new(0, 1)), 1);
+        assert_eq!(b.viewport_col(Pos::new(0, 2)), 3);
+        assert_eq!(b.viewport_row(Pos::new(0, 2)), 0);
     }
 }

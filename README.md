@@ -7,7 +7,7 @@ Two workflows share one plugin:
 
 | Action | Intent |
 |--------|--------|
-| `RooseveltAdvisors.herdr-leap.open` | Hint **any character**, then copy the **arbitrary region** between two points |
+| `RooseveltAdvisors.herdr-leap.open` | tmux-jump style: hint a **word-start** character, place the **copy-mode cursor** (default). Optional `mode = "select"` still does two-point region copy. |
 | `RooseveltAdvisors.herdr-leap.extract` | List **copy-eligible tokens** (URLs, paths, quotes, words) from the **visible** pane and copy one |
 
 Where copy plugins like `herdr-tiny-fingers` or `pluck` only hint detected tokens, **leap** still
@@ -16,15 +16,27 @@ walking a region.
 
 ## How leap works (`open`)
 
-1. **Await search** — the overlay shows the focused pane's visible content, dimmed. You type **one
+Leap opens as a **popup** covering the workspace so the source pane is **not resized** (overlay
+placement used to shrink the source and reflow the capture).
+
+### Default: jump mode (`mode = "jump"`)
+
+1. **Await search** — the popup shows the focused pane's **visible** content, dimmed. Type **one
    search character**.
-2. **Pick start** — every occurrence of that character is labeled with a short hint (`a`, `s`, `d`,
-   … then two-char labels). Matching is **smartcase**: a lowercase search char matches both cases,
-   an uppercase search char matches only uppercase. Type a label to set the **anchor**.
-3. **Pick end** — the matches are re-labeled from the anchor. Type a label to set the **extent**.
-   The character region from anchor to extent (inclusive) is copied to your clipboard. `Backspace`
-   returns to *pick start*; `Esc` / `Ctrl-C` cancels.
-4. A `Copied: <preview>` toast is shown (when `copy_toast` is enabled).
+2. **Pick target** — **word-start** matches (tmux-jump parity) are labeled (`a`, `s`, `d`, …).
+   Matching is **smartcase**. Type a label once.
+3. The plugin calls Herdr `pane.copy_mode_jump` on the source pane and exits. You land in
+   **copy-mode** with the cursor on that cell. `Esc` / `Ctrl-C` cancels without jumping.
+
+Requires a Herdr build that exposes `pane.copy_mode_jump` (visible-cell + viewport identity).
+
+### Optional: select mode (`mode = "select"`)
+
+1. **Await search** — same popup capture.
+2. **Pick start** — every matching character is labeled; pick the **anchor**.
+3. **Pick end** — re-labeled matches; pick the **extent**. The inclusive region is copied via
+   **OSC 52**. `Backspace` returns to pick start; `Esc` / `Ctrl-C` cancels.
+4. A `Copied: <preview>` toast is shown when `copy_toast` is enabled.
 
 ## How extract works (`extract`)
 
@@ -54,12 +66,11 @@ The visible buffer is modeled as **wrapped rows** at the pane width (the same co
 - **Reversed selection:** if you label the extent above/before the anchor, the region is normalized
   automatically.
 
-### On "jump" mode
+### On jump mode vs the inner program cursor
 
-A terminal multiplexer cannot move the *inner* program's cursor. So `mode = "jump"` is realized
-honestly as: set the anchor and immediately proceed to select-and-copy (identical to `mode =
-"select"`, the default). herdr-leap copies a region; it does not reposition the underlying app's
-cursor.
+A multiplexer still cannot move the *inner* program's caret. Jump places Herdr's **copy-mode**
+cursor (the same chrome `prefix+j` uses), matching tmux-jump. It does not inject keys into the
+child PTY.
 
 ## Install
 
@@ -86,7 +97,7 @@ Herdr keybindings live in the user's Herdr config, not in the plugin manifest. R
 key = "prefix+f"
 type = "plugin_action"
 command = "RooseveltAdvisors.herdr-leap.open"
-description = "leap: jump + select-copy"
+description = "leap: tmux-jump style copy-mode cursor"
 
 [[keys.command]]
 key = "prefix+space"
@@ -110,8 +121,8 @@ Optional `config.toml` in the plugin config directory
 ```toml
 # Number of search characters to type before labeling (MVP supports 1).
 search_chars = 1
-# "select" (default) or "jump" (see "On jump mode" above — both select-and-copy).
-mode = "select"
+# "jump" (default, tmux-jump / copy-mode cursor) or "select" (two-point region copy).
+mode = "jump"
 # Show a "Copied: <preview>" toast after copying.
 copy_toast = true
 
