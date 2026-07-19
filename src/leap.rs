@@ -201,11 +201,7 @@ mod tests {
         let b = buf("aba\nxa");
         assert_eq!(
             b.find_char('a'),
-            vec![
-                Pos::new(0, 0),
-                Pos::new(0, 2),
-                Pos::new(1, 1),
-            ]
+            vec![Pos::new(0, 0), Pos::new(0, 2), Pos::new(1, 1),]
         );
     }
 
@@ -261,10 +257,7 @@ mod tests {
     #[test]
     fn extract_multiline_reversed_hard_break_normalizes() {
         let b = buf("hello\nworld");
-        assert_eq!(
-            b.extract_region(Pos::new(1, 2), Pos::new(0, 2)),
-            "llo\nwor"
-        );
+        assert_eq!(b.extract_region(Pos::new(1, 2), Pos::new(0, 2)), "llo\nwor");
     }
 
     #[test]
@@ -273,10 +266,7 @@ mod tests {
         let b = WrappedBuffer::from_text("abcdefghij", Some(4));
         assert_eq!(b.rows(), &["abcd", "efgh", "ij"]);
         // Region from (0,1) through (2,0): soft wraps join with NO separator -> "bcdefghi".
-        assert_eq!(
-            b.extract_region(Pos::new(0, 1), Pos::new(2, 0)),
-            "bcdefghi"
-        );
+        assert_eq!(b.extract_region(Pos::new(0, 1), Pos::new(2, 0)), "bcdefghi");
     }
 
     #[test]
