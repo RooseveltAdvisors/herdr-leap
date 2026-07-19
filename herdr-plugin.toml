@@ -2,7 +2,7 @@ id = "RooseveltAdvisors.herdr-leap"
 name = "herdr-leap"
 version = "0.1.0"
 min_herdr_version = "0.7.0"
-description = "EasyMotion/leap-style character jump and select-to-copy for Herdr — hint any character, copy any region"
+description = "EasyMotion/leap-style character jump and select-to-copy, plus visible-buffer token extract for Herdr"
 platforms = ["linux", "macos"]
 
 [[build]]
@@ -14,8 +14,20 @@ title = "Leap (jump + select-copy)"
 description = "Jump to any character and copy an arbitrary region"
 command = ["sh", "-c", "exec \"${HERDR_BIN_PATH:-herdr}\" plugin pane open --plugin RooseveltAdvisors.herdr-leap --entrypoint leap"]
 
+[[actions]]
+id = "extract"
+title = "Extract (copy visible tokens)"
+description = "List copy-eligible text from the visible pane and copy a selection"
+command = ["sh", "-c", "exec \"${HERDR_BIN_PATH:-herdr}\" plugin pane open --plugin RooseveltAdvisors.herdr-leap --entrypoint extract"]
+
 [[panes]]
 id = "leap"
 title = "herdr-leap"
 placement = "overlay"
 command = ["./target/release/herdr-leap"]
+
+[[panes]]
+id = "extract"
+title = "herdr-leap-extract"
+placement = "overlay"
+command = ["./target/release/herdr-leap", "--mode", "extract"]
