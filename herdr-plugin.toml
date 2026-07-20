@@ -1,8 +1,8 @@
 id = "RooseveltAdvisors.herdr-leap"
 name = "herdr-leap"
-version = "0.1.0"
+version = "0.2.0"
 min_herdr_version = "0.7.0"
-description = "EasyMotion/leap-style character jump and select-to-copy, visible-buffer token extract, and vim-aware smart pane navigation for Herdr"
+description = "tmux-jump-inspired character jump and select-to-copy for Herdr; credits schasse/tmux-jump"
 platforms = ["linux", "macos"]
 
 [[build]]
@@ -11,14 +11,8 @@ command = ["cargo", "build", "--release", "--locked"]
 [[actions]]
 id = "open"
 title = "Leap (jump + select-copy)"
-description = "Jump to any character and copy an arbitrary region"
-command = ["sh", "-c", "exec \"${HERDR_BIN_PATH:-herdr}\" plugin pane open --plugin RooseveltAdvisors.herdr-leap --entrypoint leap"]
-
-[[actions]]
-id = "extract"
-title = "Extract (copy visible tokens)"
-description = "List copy-eligible text from the visible pane and copy a selection"
-command = ["sh", "-c", "exec \"${HERDR_BIN_PATH:-herdr}\" plugin pane open --plugin RooseveltAdvisors.herdr-leap --entrypoint extract"]
+description = "tmux-jump-style character hints followed by arbitrary region copy"
+command = ["./scripts/open-leap"]
 
 [[actions]]
 id = "smart-left"
@@ -49,9 +43,3 @@ id = "leap"
 title = "herdr-leap"
 placement = "overlay"
 command = ["./target/release/herdr-leap"]
-
-[[panes]]
-id = "extract"
-title = "herdr-leap-extract"
-placement = "overlay"
-command = ["./target/release/herdr-leap", "--mode", "extract"]

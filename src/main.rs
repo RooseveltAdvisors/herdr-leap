@@ -6,7 +6,6 @@ use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use herdr_leap::app::{App, Outcome};
 use herdr_leap::clipboard::copy_to_clipboard;
 use herdr_leap::config::load_leap_settings;
-use herdr_leap::extract_app::{ExtractApp, ExtractInput};
 use herdr_leap::herdr_client::{context_focused_pane_id, SocketClient};
 use herdr_leap::leap::WrappedBuffer;
 use herdr_leap::smart_nav::{decide, Decision, Direction};
@@ -25,7 +24,6 @@ fn main() -> ExitCode {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RunMode {
     Leap,
-    Extract,
     SmartNav { direction: Direction },
 }
 
@@ -54,11 +52,7 @@ fn run() -> Result<()> {
     let settings = load_leap_settings(config_dir.as_deref().map(Path::new))?;
     let copy_toast = settings.copy_toast;
 
-    let outcome = match mode {
-        RunMode::Leap => run_leap(&text, wrap_width, &settings)?,
-        RunMode::Extract => run_extract(&text, wrap_width, &settings)?,
-        RunMode::SmartNav { .. } => unreachable!("smart-nav handled above"),
-    };
+    let outcome = run_leap(&text, wrap_width, &settings)?;
     log_state(&format!("outcome={outcome:?}"));
 
     if let Outcome::Copy(text) = outcome {
@@ -152,38 +146,6 @@ fn run_leap(
     }
 }
 
-fn run_extract(
-    text: &str,
-    wrap_width: Option<usize>,
-    settings: &herdr_leap::config::LeapSettings,
-) -> Result<Outcome> {
-    let mut app =
-        ExtractApp::from_visible_text_with_wrap_width(text, wrap_width, settings.theme.clone());
-    log_state(&format!(
-        "start mode=extract items={} wrap_width={wrap_width:?} copy_toast={}",
-        app.total_count(),
-        settings.copy_toast
-    ));
-
-    let _restore = TerminalRestore;
-    let mut terminal = ratatui::init();
-    loop {
-        terminal.draw(|frame| herdr_leap::extract_ui::draw(frame, &app))?;
-        match event::read()? {
-            Event::Key(key) => {
-                if let Some(input) = extract_key_to_input(key) {
-                    match app.handle_input(input) {
-                        Outcome::Continue => {}
-                        other => return Ok(other),
-                    }
-                }
-            }
-            Event::Resize(_, _) => {}
-            _ => {}
-        }
-    }
-}
-
 fn parse_run_mode<I, S>(args: I) -> Result<RunMode>
 where
     I: IntoIterator<Item = S>,
@@ -199,7 +161,7 @@ where
                 let value = iter
                     .next()
                     .map(|s| s.as_ref().to_string())
-                    .context("--mode requires leap|extract|smart-nav")?;
+                    .context("--mode requires leap|smart-nav")?;
                 mode = parse_mode_value(&value)?;
             }
             flag if flag.starts_with("--mode=") => {
@@ -217,9 +179,7 @@ where
             }
             "--help" | "-h" => {
                 // Not reached in normal plugin open; keep for local invocation.
-                bail!(
-                    "usage: herdr-leap [--mode leap|extract|smart-nav] [--direction left|down|up|right]"
-                );
+                bail!("usage: herdr-leap [--mode leap|smart-nav] [--direction left|down|up|right]");
             }
             other => bail!("unrecognized argument: {other}"),
         }
@@ -240,12 +200,11 @@ where
 fn parse_mode_value(value: &str) -> Result<RunMode> {
     match value {
         "leap" => Ok(RunMode::Leap),
-        "extract" => Ok(RunMode::Extract),
         "smart-nav" => Ok(RunMode::SmartNav {
             // Placeholder; parse_run_mode fills the real direction.
             direction: Direction::Left,
         }),
-        other => bail!("unknown --mode {other:?} (expected leap|extract|smart-nav)"),
+        other => bail!("unknown --mode {other:?} (expected leap|smart-nav)"),
     }
 }
 
@@ -305,26 +264,6 @@ fn leap_key_to_char(key: KeyEvent) -> Option<char> {
         KeyCode::Esc => Some('\u{1b}'),
         KeyCode::Backspace => Some('\u{7f}'),
         KeyCode::Char(ch) => Some(ch),
-        _ => None,
-    }
-}
-
-fn extract_key_to_input(key: KeyEvent) -> Option<ExtractInput> {
-    if key.modifiers.contains(KeyModifiers::CONTROL) {
-        return match key.code {
-            KeyCode::Char('c') | KeyCode::Char('C') => Some(ExtractInput::CtrlC),
-            KeyCode::Char('n') | KeyCode::Char('N') => Some(ExtractInput::Down),
-            KeyCode::Char('p') | KeyCode::Char('P') => Some(ExtractInput::Up),
-            _ => None,
-        };
-    }
-    match key.code {
-        KeyCode::Esc => Some(ExtractInput::Esc),
-        KeyCode::Backspace => Some(ExtractInput::Backspace),
-        KeyCode::Enter => Some(ExtractInput::Enter),
-        KeyCode::Up => Some(ExtractInput::Up),
-        KeyCode::Down => Some(ExtractInput::Down),
-        KeyCode::Char(ch) => Some(ExtractInput::Char(ch)),
         _ => None,
     }
 }
@@ -395,15 +334,8 @@ mod tests {
     }
 
     #[test]
-    fn parse_run_mode_accepts_extract() {
-        assert_eq!(
-            parse_run_mode(["--mode", "extract"]).unwrap(),
-            RunMode::Extract
-        );
-        assert_eq!(
-            parse_run_mode(["--mode=extract"]).unwrap(),
-            RunMode::Extract
-        );
+    fn parse_run_mode_rejects_migrated_extract_mode() {
+        assert!(parse_run_mode(["--mode", "extract"]).is_err());
     }
 
     #[test]
@@ -430,7 +362,7 @@ mod tests {
     #[test]
     fn parse_run_mode_rejects_direction_without_smart_nav() {
         assert!(parse_run_mode(["--direction", "left"]).is_err());
-        assert!(parse_run_mode(["--mode", "extract", "--direction", "up"]).is_err());
+        assert!(parse_run_mode(["--mode", "leap", "--direction", "up"]).is_err());
     }
 
     #[test]
@@ -441,23 +373,38 @@ mod tests {
     }
 
     #[test]
-    fn extract_key_maps_enter_arrows_and_ctrl_nav() {
-        assert_eq!(
-            extract_key_to_input(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
-            Some(ExtractInput::Enter)
+    fn manifest_keeps_extractor_in_its_own_plugin() {
+        let manifest = include_str!("../herdr-plugin.toml");
+        let value: toml::Value = toml::from_str(manifest).expect("manifest parses");
+        let actions = value
+            .get("actions")
+            .and_then(|v| v.as_array())
+            .expect("actions array");
+        let action_ids: Vec<&str> = actions
+            .iter()
+            .filter_map(|action| action.get("id").and_then(|id| id.as_str()))
+            .collect();
+        assert!(
+            !action_ids.contains(&"extract"),
+            "extract action moved to RooseveltAdvisors.herdr-extractor: {action_ids:?}"
         );
-        assert_eq!(
-            extract_key_to_input(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)),
-            Some(ExtractInput::Up)
-        );
-        assert_eq!(
-            extract_key_to_input(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL)),
-            Some(ExtractInput::Down)
+
+        let panes = value
+            .get("panes")
+            .and_then(|v| v.as_array())
+            .expect("panes array");
+        let pane_ids: Vec<&str> = panes
+            .iter()
+            .filter_map(|pane| pane.get("id").and_then(|id| id.as_str()))
+            .collect();
+        assert!(
+            !pane_ids.contains(&"extract"),
+            "extract pane moved to RooseveltAdvisors.herdr-extractor: {pane_ids:?}"
         );
     }
 
     #[test]
-    fn manifest_declares_open_extract_and_smart_nav_actions() {
+    fn manifest_declares_open_and_one_shot_smart_nav_actions() {
         let manifest = include_str!("../herdr-plugin.toml");
         let value: toml::Value = toml::from_str(manifest).expect("manifest parses");
         let actions = value
@@ -466,51 +413,26 @@ mod tests {
             .expect("actions array");
         let ids: Vec<&str> = actions
             .iter()
-            .filter_map(|a| a.get("id").and_then(|id| id.as_str()))
+            .filter_map(|action| action.get("id").and_then(|id| id.as_str()))
             .collect();
         assert!(ids.contains(&"open"), "open action missing: {ids:?}");
-        assert!(ids.contains(&"extract"), "extract action missing: {ids:?}");
         for smart in ["smart-left", "smart-down", "smart-up", "smart-right"] {
             assert!(ids.contains(&smart), "{smart} action missing: {ids:?}");
         }
 
         let open = actions
             .iter()
-            .find(|a| a.get("id").and_then(|id| id.as_str()) == Some("open"))
-            .unwrap();
-        let open_cmd = open
-            .get("command")
-            .and_then(|c| c.as_array())
-            .expect("open command");
-        let open_joined = open_cmd
-            .iter()
-            .filter_map(|v| v.as_str())
-            .collect::<Vec<_>>()
-            .join(" ");
-        assert!(
-            open_joined.contains("--entrypoint leap"),
-            "open must keep leap entrypoint: {open_joined}"
+            .find(|action| action.get("id").and_then(|id| id.as_str()) == Some("open"))
+            .expect("open action");
+        assert_eq!(
+            open.get("command")
+                .and_then(|command| command.as_array())
+                .and_then(|command| command.first())
+                .and_then(|part| part.as_str()),
+            Some("./scripts/open-leap")
         );
 
-        let extract = actions
-            .iter()
-            .find(|a| a.get("id").and_then(|id| id.as_str()) == Some("extract"))
-            .unwrap();
-        let extract_cmd = extract
-            .get("command")
-            .and_then(|c| c.as_array())
-            .expect("extract command");
-        let extract_joined = extract_cmd
-            .iter()
-            .filter_map(|v| v.as_str())
-            .collect::<Vec<_>>()
-            .join(" ");
-        assert!(
-            extract_joined.contains("--entrypoint extract"),
-            "extract must open extract entrypoint: {extract_joined}"
-        );
-
-        for (id, dir) in [
+        for (id, direction) in [
             ("smart-left", "left"),
             ("smart-down", "down"),
             ("smart-up", "up"),
@@ -518,65 +440,26 @@ mod tests {
         ] {
             let action = actions
                 .iter()
-                .find(|a| a.get("id").and_then(|x| x.as_str()) == Some(id))
+                .find(|action| action.get("id").and_then(|value| value.as_str()) == Some(id))
                 .unwrap_or_else(|| panic!("{id} missing"));
-            let cmd = action
+            let command = action
                 .get("command")
-                .and_then(|c| c.as_array())
-                .unwrap_or_else(|| panic!("{id} command"));
-            let joined = cmd
+                .and_then(|command| command.as_array())
+                .expect("smart-nav command")
                 .iter()
-                .filter_map(|v| v.as_str())
+                .filter_map(|part| part.as_str())
                 .collect::<Vec<_>>()
                 .join(" ");
-            assert!(
-                joined.contains("smart-nav") && joined.contains(dir),
-                "{id} must invoke one-shot smart-nav {dir}: {joined}"
-            );
-            assert!(
-                !joined.contains("plugin pane open"),
-                "{id} must not open an overlay pane: {joined}"
-            );
+            assert!(command.contains("smart-nav") && command.contains(direction));
+            assert!(!command.contains("plugin pane open"));
         }
+    }
 
-        let panes = value
-            .get("panes")
-            .and_then(|v| v.as_array())
-            .expect("panes array");
-        let pane_ids: Vec<&str> = panes
-            .iter()
-            .filter_map(|p| p.get("id").and_then(|id| id.as_str()))
-            .collect();
-        assert!(
-            pane_ids.contains(&"leap"),
-            "leap pane missing: {pane_ids:?}"
-        );
-        assert!(
-            pane_ids.contains(&"extract"),
-            "extract pane missing: {pane_ids:?}"
-        );
-        // Smart-nav is one-shot; it must not add an overlay pane entrypoint.
-        assert!(
-            !pane_ids.iter().any(|id| id.contains("smart")),
-            "smart-nav must not declare overlay panes: {pane_ids:?}"
-        );
-
-        let extract_pane = panes
-            .iter()
-            .find(|p| p.get("id").and_then(|id| id.as_str()) == Some("extract"))
-            .unwrap();
-        let pane_cmd = extract_pane
-            .get("command")
-            .and_then(|c| c.as_array())
-            .expect("extract pane command");
-        let pane_joined = pane_cmd
-            .iter()
-            .filter_map(|v| v.as_str())
-            .collect::<Vec<_>>()
-            .join(" ");
-        assert!(
-            pane_joined.contains("--mode") && pane_joined.contains("extract"),
-            "extract pane must pass --mode extract: {pane_joined}"
-        );
+    #[test]
+    fn open_script_falls_back_when_herdr_bin_path_is_stale() {
+        let script = include_str!("../scripts/open-leap");
+        assert!(script.contains("[ -x \"$HERDR_BIN_PATH\" ]"));
+        assert!(script.contains("command -v herdr"));
+        assert!(script.contains("--entrypoint leap"));
     }
 }
