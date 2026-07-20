@@ -179,9 +179,7 @@ where
             }
             "--help" | "-h" => {
                 // Not reached in normal plugin open; keep for local invocation.
-                bail!(
-                    "usage: herdr-leap [--mode leap|smart-nav] [--direction left|down|up|right]"
-                );
+                bail!("usage: herdr-leap [--mode leap|smart-nav] [--direction left|down|up|right]");
             }
             other => bail!("unrecognized argument: {other}"),
         }
