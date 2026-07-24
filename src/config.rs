@@ -25,7 +25,7 @@ impl Default for LeapSettings {
     fn default() -> Self {
         Self {
             search_chars: 1,
-            mode: Mode::Select,
+            mode: Mode::Jump,
             copy_toast: false,
             theme: Theme::default(),
         }
@@ -62,9 +62,8 @@ fn parse_config(input: &str) -> Result<RawConfig, toml::de::Error> {
 
 fn parse_mode(raw: Option<&str>) -> Mode {
     match raw {
-        Some("jump") => Mode::Jump,
-        // "select" and any unrecognized value fall back to the safe default.
-        _ => Mode::Select,
+        Some("select") => Mode::Select,
+        _ => Mode::Jump,
     }
 }
 
@@ -151,7 +150,7 @@ mod tests {
         let settings = compile_settings(&parse_config("").unwrap()).unwrap();
         assert_eq!(settings, LeapSettings::default());
         assert_eq!(settings.search_chars, 1);
-        assert_eq!(settings.mode, Mode::Select);
+        assert_eq!(settings.mode, Mode::Jump);
         assert!(!settings.copy_toast);
     }
 
@@ -162,8 +161,14 @@ mod tests {
     }
 
     #[test]
-    fn unknown_mode_falls_back_to_select() {
+    fn unknown_mode_falls_back_to_jump() {
         let settings = compile_settings(&parse_config("mode = \"teleport\"").unwrap()).unwrap();
+        assert_eq!(settings.mode, Mode::Jump);
+    }
+
+    #[test]
+    fn parses_select_mode() {
+        let settings = compile_settings(&parse_config("mode = \"select\"").unwrap()).unwrap();
         assert_eq!(settings.mode, Mode::Select);
     }
 

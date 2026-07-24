@@ -1,9 +1,9 @@
 [package]
 name = "herdr-leap"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 rust-version = "1.85"
-description = "tmux-jump-style character hints and region copy for Herdr"
+description = "tmux-jump-style word-start copy-mode jump for Herdr"
 license = "MIT"
 authors = ["Roosevelt Advisors"]
 

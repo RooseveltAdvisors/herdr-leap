@@ -1,8 +1,8 @@
 id = "RooseveltAdvisors.herdr-leap"
 name = "herdr-leap"
-version = "0.2.0"
+version = "0.2.1"
 min_herdr_version = "0.7.0"
-description = "tmux-jump-inspired character jump and select-to-copy for Herdr; credits schasse/tmux-jump"
+description = "tmux-jump-inspired word-start copy-mode jump for Herdr; credits schasse/tmux-jump"
 platforms = ["linux", "macos"]
 
 [[build]]
@@ -10,8 +10,8 @@ command = ["cargo", "build", "--release", "--locked"]
 
 [[actions]]
 id = "open"
-title = "Leap (jump + select-copy)"
-description = "tmux-jump-style character hints followed by arbitrary region copy"
+title = "Leap (jump)"
+description = "Hint a word start and place the source pane's copy-mode cursor"
 command = ["./scripts/open-leap"]
 
 [[actions]]
@@ -41,5 +41,5 @@ command = ["./target/release/herdr-leap", "--mode", "smart-nav", "--direction", 
 [[panes]]
 id = "leap"
 title = "herdr-leap"
-placement = "overlay"
+placement = "popup"
 command = ["./target/release/herdr-leap"]
