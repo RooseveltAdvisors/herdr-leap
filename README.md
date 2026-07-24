@@ -31,10 +31,12 @@ v0.2.0. Bind `prefix+space` to `RooseveltAdvisors.herdr-extractor.extract`.
 2. Type one search character. Smartcase word starts receive hints.
 3. Type one hint. Herdr enters copy mode with its cursor at that captured cell.
 
-The jump carries the visible read's revision and scroll offset. A stale viewport is refreshed only
-when its text and scroll position are unchanged; otherwise Leap refuses to drift. `Esc` or `Ctrl-C`
-cancels without touching the clipboard. Optional `mode = "select"` retains the two-pick OSC 52
-region-copy flow.
+The jump carries the visible read's revision and scroll offset. If the viewport goes stale between
+capture and jump, Leap refreshes and re-issues as long as the selected row still holds — an
+unrelated line churning above the target (e.g. a live agent/status line) no longer blocks it. Leap
+refuses only when the target could have moved: the scroll offset, viewport height, wrapped row
+count, or the selected row's own content changed. `Esc` or `Ctrl-C` cancels without touching the
+clipboard. Optional `mode = "select"` retains the two-pick OSC 52 region-copy flow.
 
 ## Install
 

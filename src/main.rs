@@ -137,10 +137,18 @@ fn apply_jump(
                 if attempt == 1 && message.contains("stale_pane_viewport") {
                     let refreshed_scroll = client.pane_scroll(pane_id)?;
                     let refreshed_snapshot = client.read_visible_pane(pane_id)?;
-                    if refreshed_snapshot.text != snapshot.text
-                        || refreshed_scroll.offset_from_bottom != scroll.offset_from_bottom
+                    // Re-issue with the fresh revision when the SELECTED row still holds, even if
+                    // an unrelated row (a live status/agent line) churned. Refuse only when the
+                    // jump target could have moved: the scroll offset, viewport height, wrapped row
+                    // count, or the selected row's own content changed. wrap_width is stable here —
+                    // the popup is full-size, so capture never resizes the source viewport.
+                    let fresh = WrappedBuffer::from_text(&refreshed_snapshot.text, wrap_width);
+                    if refreshed_scroll.offset_from_bottom != scroll.offset_from_bottom
+                        || refreshed_scroll.viewport_rows != scroll.viewport_rows
+                        || fresh.row_count() != buffer.row_count()
+                        || fresh.rows().get(pos.row) != buffer.rows().get(pos.row)
                     {
-                        bail!("pane content or scroll position changed; refusing a stale jump");
+                        bail!("selected viewport row changed; refusing a stale jump");
                     }
                     request.revision = refreshed_snapshot.revision;
                     request.offset_from_bottom = refreshed_scroll.offset_from_bottom;
@@ -457,14 +465,18 @@ mod tests {
     }
 
     #[test]
-    fn stale_jump_retries_only_the_unchanged_viewport_identity() {
+    fn stale_jump_retries_when_only_a_non_target_row_changed() {
+        // A live status/agent row above the target churns between capture and jump, so the full
+        // viewport text differs, but the selected row is byte-identical. The retry must re-issue
+        // the same row/cell with the fresh revision instead of refusing.
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let socket_path = std::env::temp_dir().join(format!("herdr-leap-jump-{unique}.sock"));
+        let socket_path = std::env::temp_dir().join(format!("herdr-leap-jump-safe-{unique}.sock"));
         let listener = UnixListener::bind(&socket_path).unwrap();
-        let text = "history\n aあtarget";
+        let original_text = "history\n aあtarget";
+        let fresh_text = "changed\n aあtarget";
 
         let handle = std::thread::spawn(move || {
             let (_probe, _) = listener.accept().unwrap();
@@ -489,7 +501,7 @@ mod tests {
                     2 => {
                         assert_eq!(request["method"], "pane.read");
                         format!(
-                            r#"{{"id":"3","result":{{"type":"pane_read","read":{{"text":{text:?},"revision":42}}}}}}"#
+                            r#"{{"id":"3","result":{{"type":"pane_read","read":{{"text":{fresh_text:?},"revision":42}}}}}}"#
                         )
                     }
                     _ => {
@@ -511,7 +523,7 @@ mod tests {
             &mut client,
             "w1:p1",
             &VisiblePaneSnapshot {
-                text: text.into(),
+                text: original_text.into(),
                 revision: 41,
             },
             Some(&PaneScrollSnapshot {
@@ -524,6 +536,78 @@ mod tests {
             None,
         )
         .unwrap();
+
+        handle.join().unwrap();
+        let _ = std::fs::remove_file(socket_path);
+    }
+
+    #[test]
+    fn stale_jump_refuses_when_the_target_row_shifts() {
+        // The selected row itself changed under the cursor (reflow/edit), so re-issuing the same
+        // row/cell would land on the wrong content. The retry must refuse and never send a second
+        // jump.
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let socket_path = std::env::temp_dir().join(format!("herdr-leap-jump-shift-{unique}.sock"));
+        let listener = UnixListener::bind(&socket_path).unwrap();
+        let original_text = "history\n aあtarget";
+        let fresh_text = "history\n aあmoved!";
+
+        let handle = std::thread::spawn(move || {
+            let (_probe, _) = listener.accept().unwrap();
+            for step in 0..3 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut line = String::new();
+                BufReader::new(stream.try_clone().unwrap())
+                    .read_line(&mut line)
+                    .unwrap();
+                let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+                let response = match step {
+                    0 => {
+                        assert_eq!(request["method"], "pane.copy_mode_jump");
+                        r#"{"id":"1","error":{"code":"stale_pane_viewport","message":"stale"}}"#
+                            .to_string()
+                    }
+                    1 => {
+                        assert_eq!(request["method"], "pane.get");
+                        r#"{"id":"2","result":{"type":"pane_info","pane":{"revision":42,"scroll":{"offset_from_bottom":3,"max_offset_from_bottom":9,"viewport_rows":2}}}}"#.to_string()
+                    }
+                    _ => {
+                        assert_eq!(request["method"], "pane.read");
+                        format!(
+                            r#"{{"id":"3","result":{{"type":"pane_read","read":{{"text":{fresh_text:?},"revision":42}}}}}}"#
+                        )
+                    }
+                };
+                stream.write_all(response.as_bytes()).unwrap();
+                stream.write_all(b"\n").unwrap();
+            }
+        });
+
+        let mut client = SocketClient::connect(&socket_path).unwrap();
+        let err = apply_jump(
+            &mut client,
+            "w1:p1",
+            &VisiblePaneSnapshot {
+                text: original_text.into(),
+                revision: 41,
+            },
+            Some(&PaneScrollSnapshot {
+                offset_from_bottom: 3,
+                max_offset_from_bottom: 9,
+                viewport_rows: 2,
+                revision: 40,
+            }),
+            Pos::new(1, 3),
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("refusing a stale jump"),
+            "expected a refusal, got: {err:#}"
+        );
 
         handle.join().unwrap();
         let _ = std::fs::remove_file(socket_path);
