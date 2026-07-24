@@ -6,8 +6,11 @@ use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use herdr_leap::app::{App, Outcome};
 use herdr_leap::clipboard::copy_to_clipboard;
 use herdr_leap::config::load_leap_settings;
-use herdr_leap::herdr_client::{context_focused_pane_id, SocketClient};
-use herdr_leap::leap::WrappedBuffer;
+use herdr_leap::herdr_client::{
+    context_focused_pane_id, CopyModeJumpRequest, PaneScrollSnapshot, SocketClient,
+    VisiblePaneSnapshot,
+};
+use herdr_leap::leap::{Pos, WrappedBuffer};
 use herdr_leap::smart_nav::{decide, Decision, Direction};
 
 fn main() -> ExitCode {
@@ -39,7 +42,16 @@ fn run() -> Result<()> {
         return run_smart_nav(&mut client, &pane_id, direction);
     }
 
-    let text = client.read_visible_pane(&pane_id)?;
+    // Keep the source viewport identity from before the visible read. The popup placement prevents
+    // the picker itself from resizing this pane.
+    let scroll = match client.pane_scroll(&pane_id) {
+        Ok(scroll) => Some(scroll),
+        Err(err) => {
+            log_state(&format!("pane_scroll_unavailable: {err:#}"));
+            None
+        }
+    };
+    let snapshot = client.read_visible_pane(&pane_id)?;
     let wrap_width = match client.visible_pane_width(&pane_id) {
         Ok(width) => Some(visible_wrap_width(width)),
         Err(err) => {
@@ -52,24 +64,93 @@ fn run() -> Result<()> {
     let settings = load_leap_settings(config_dir.as_deref().map(Path::new))?;
     let copy_toast = settings.copy_toast;
 
-    let outcome = run_leap(&text, wrap_width, &settings)?;
+    let outcome = run_leap(&snapshot.text, wrap_width, &settings)?;
     log_state(&format!("outcome={outcome:?}"));
 
-    if let Outcome::Copy(text) = outcome {
-        copy_to_clipboard(&text)?;
-        if copy_toast {
-            match client.show_notification(&copy_notification_title(&text)) {
-                Ok(result) if !result.shown => {
-                    log_state(&format!("notification_not_shown reason={}", result.reason));
-                }
-                Ok(_) => {}
-                Err(err) => {
-                    log_state(&format!("notification_error: {err:#}"));
+    match outcome {
+        Outcome::Jump(pos) => {
+            apply_jump(
+                &mut client,
+                &pane_id,
+                &snapshot,
+                scroll.as_ref(),
+                pos,
+                wrap_width,
+            )?;
+        }
+        Outcome::Copy(text) => {
+            copy_to_clipboard(&text)?;
+            if copy_toast {
+                match client.show_notification(&copy_notification_title(&text)) {
+                    Ok(result) if !result.shown => {
+                        log_state(&format!("notification_not_shown reason={}", result.reason));
+                    }
+                    Ok(_) => {}
+                    Err(err) => log_state(&format!("notification_error: {err:#}")),
                 }
             }
         }
+        Outcome::Continue | Outcome::Cancel => {}
     }
     Ok(())
+}
+
+fn apply_jump(
+    client: &mut SocketClient,
+    pane_id: &str,
+    snapshot: &VisiblePaneSnapshot,
+    scroll: Option<&PaneScrollSnapshot>,
+    pos: Pos,
+    wrap_width: Option<usize>,
+) -> Result<()> {
+    let scroll = scroll.context("jump requires pane scroll metrics from pane.get")?;
+    let buffer = WrappedBuffer::from_text(&snapshot.text, wrap_width);
+    let mut request = CopyModeJumpRequest {
+        pane_id: pane_id.to_string(),
+        viewport_row: buffer.viewport_row(pos),
+        viewport_col: buffer.viewport_col(pos),
+        revision: snapshot.revision,
+        offset_from_bottom: scroll.offset_from_bottom,
+    };
+
+    for attempt in 1..=2 {
+        log_state(&format!(
+            "jump attempt={attempt} pane_id={pane_id} row={} col={} revision={} offset={}",
+            request.viewport_row,
+            request.viewport_col,
+            request.revision,
+            request.offset_from_bottom
+        ));
+        match client.copy_mode_jump(&request) {
+            Ok(result) => {
+                log_state(&format!(
+                    "jump_ok pane_id={} row={} col={}",
+                    result.pane_id, result.viewport_row, result.viewport_col
+                ));
+                return Ok(());
+            }
+            Err(err) => {
+                let message = err.to_string();
+                if message.contains("unknown_method") || message.contains("method_not_found") {
+                    bail!("jump unavailable: this Herdr build lacks pane.copy_mode_jump");
+                }
+                if attempt == 1 && message.contains("stale_pane_viewport") {
+                    let refreshed_scroll = client.pane_scroll(pane_id)?;
+                    let refreshed_snapshot = client.read_visible_pane(pane_id)?;
+                    if refreshed_snapshot.text != snapshot.text
+                        || refreshed_scroll.offset_from_bottom != scroll.offset_from_bottom
+                    {
+                        bail!("pane content or scroll position changed; refusing a stale jump");
+                    }
+                    request.revision = refreshed_snapshot.revision;
+                    request.offset_from_bottom = refreshed_scroll.offset_from_bottom;
+                    continue;
+                }
+                return Err(err).context("pane.copy_mode_jump failed");
+            }
+        }
+    }
+    unreachable!("two-attempt jump loop always returns")
 }
 
 /// One-shot smart pane navigation. No TUI / overlay startup.
@@ -272,6 +353,9 @@ fn leap_key_to_char(key: KeyEvent) -> Option<char> {
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixListener;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn copy_notification_title_includes_short_text() {
@@ -373,6 +457,79 @@ mod tests {
     }
 
     #[test]
+    fn stale_jump_retries_only_the_unchanged_viewport_identity() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let socket_path = std::env::temp_dir().join(format!("herdr-leap-jump-{unique}.sock"));
+        let listener = UnixListener::bind(&socket_path).unwrap();
+        let text = "history\n aあtarget";
+
+        let handle = std::thread::spawn(move || {
+            let (_probe, _) = listener.accept().unwrap();
+            for step in 0..4 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut line = String::new();
+                BufReader::new(stream.try_clone().unwrap())
+                    .read_line(&mut line)
+                    .unwrap();
+                let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+                let response = match step {
+                    0 => {
+                        assert_eq!(request["method"], "pane.copy_mode_jump");
+                        assert_eq!(request["params"]["revision"], 41);
+                        r#"{"id":"1","error":{"code":"stale_pane_viewport","message":"stale"}}"#
+                            .to_string()
+                    }
+                    1 => {
+                        assert_eq!(request["method"], "pane.get");
+                        r#"{"id":"2","result":{"type":"pane_info","pane":{"revision":42,"scroll":{"offset_from_bottom":3,"max_offset_from_bottom":9,"viewport_rows":2}}}}"#.to_string()
+                    }
+                    2 => {
+                        assert_eq!(request["method"], "pane.read");
+                        format!(
+                            r#"{{"id":"3","result":{{"type":"pane_read","read":{{"text":{text:?},"revision":42}}}}}}"#
+                        )
+                    }
+                    _ => {
+                        assert_eq!(request["method"], "pane.copy_mode_jump");
+                        assert_eq!(request["params"]["viewport_row"], 1);
+                        assert_eq!(request["params"]["viewport_col"], 4);
+                        assert_eq!(request["params"]["revision"], 42);
+                        assert_eq!(request["params"]["offset_from_bottom"], 3);
+                        r#"{"id":"4","result":{"type":"pane_copy_mode_jump","pane_id":"w1:p1","viewport_row":1,"viewport_col":4,"revision":42,"offset_from_bottom":3}}"#.to_string()
+                    }
+                };
+                stream.write_all(response.as_bytes()).unwrap();
+                stream.write_all(b"\n").unwrap();
+            }
+        });
+
+        let mut client = SocketClient::connect(&socket_path).unwrap();
+        apply_jump(
+            &mut client,
+            "w1:p1",
+            &VisiblePaneSnapshot {
+                text: text.into(),
+                revision: 41,
+            },
+            Some(&PaneScrollSnapshot {
+                offset_from_bottom: 3,
+                max_offset_from_bottom: 9,
+                viewport_rows: 2,
+                revision: 40,
+            }),
+            Pos::new(1, 3),
+            None,
+        )
+        .unwrap();
+
+        handle.join().unwrap();
+        let _ = std::fs::remove_file(socket_path);
+    }
+
+    #[test]
     fn manifest_keeps_extractor_in_its_own_plugin() {
         let manifest = include_str!("../herdr-plugin.toml");
         let value: toml::Value = toml::from_str(manifest).expect("manifest parses");
@@ -461,5 +618,8 @@ mod tests {
         assert!(script.contains("[ -x \"$HERDR_BIN_PATH\" ]"));
         assert!(script.contains("command -v herdr"));
         assert!(script.contains("--entrypoint leap"));
+        assert!(script.contains("--placement popup"));
+        assert!(script.contains("--width 100%"));
+        assert!(script.contains("--height 100%"));
     }
 }

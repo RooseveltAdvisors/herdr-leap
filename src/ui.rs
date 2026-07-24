@@ -1,4 +1,4 @@
-//! Ratatui rendering for the three leap phases.
+//! Ratatui rendering for Leap's search and pick phases.
 //!
 //! The visible pane content is drawn dimmed; hint labels are overlaid bright at each reachable
 //! match. A bottom status line reports the phase, mode, search char, pending input, and any message,
@@ -16,7 +16,8 @@ use crate::theme::Theme;
 
 pub fn draw(frame: &mut Frame<'_>, app: &App) {
     let area = frame.area();
-    let body_rows = usize::from(area.height.saturating_sub(1));
+    // Paint status over the last row so source viewport row indices remain unchanged.
+    let body_rows = usize::from(area.height);
     let lines = render_body(app, body_rows);
     frame.render_widget(Paragraph::new(lines), area);
     draw_status(frame, app, area);
@@ -61,10 +62,11 @@ fn render_body(app: &App, max_rows: usize) -> Vec<Line<'static>> {
     } else {
         None
     };
-    app.buffer()
-        .rows()
-        .iter()
+    let rows = app.buffer().rows();
+    let start = rows.len().saturating_sub(max_rows);
+    rows.iter()
         .enumerate()
+        .skip(start)
         .take(max_rows)
         .map(|(row, line)| {
             render_row(
@@ -228,5 +230,24 @@ mod tests {
         let rendered: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(rendered, "aello");
         assert_eq!(rendered.chars().count(), "hello".chars().count());
+    }
+
+    #[test]
+    fn render_body_keeps_the_source_viewports_bottom_rows() {
+        let app = App::new(
+            crate::leap::WrappedBuffer::from_text("old\ntop\nmiddle\nbottom", None),
+            Theme::default(),
+            crate::app::Mode::Jump,
+        );
+        let rendered: Vec<String> = render_body(&app, 3)
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect()
+            })
+            .collect();
+        assert_eq!(rendered, ["top", "middle", "bottom"]);
     }
 }

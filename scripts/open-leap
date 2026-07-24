@@ -14,4 +14,7 @@ fi
 
 exec "$herdr_cli" plugin pane open \
     --plugin RooseveltAdvisors.herdr-leap \
-    --entrypoint leap
+    --entrypoint leap \
+    --placement popup \
+    --width 100% \
+    --height 100%

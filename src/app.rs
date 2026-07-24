@@ -1,9 +1,7 @@
 //! The interactive leap state machine.
 //!
-//! Three phases drive the flow:
-//! 1. `AwaitSearch` — the user types one search character.
-//! 2. `PickStart` — every match of that character is labeled; the user picks the anchor.
-//! 3. `PickEnd` — the matches are re-labeled; the user picks the extent, which copies the region.
+//! Select mode has three phases: await-search → pick-start → pick-end. Jump mode exits after the
+//! first word-start pick.
 //!
 //! All logic here is pure (no terminal I/O), so `handle_char` is fully unit-testable.
 
@@ -18,15 +16,16 @@ pub enum Outcome {
     Continue,
     /// Copy this text and exit.
     Copy(String),
+    /// Jump the source pane's copy-mode cursor to this visible buffer position and exit.
+    Jump(Pos),
     /// Abort with no copy.
     Cancel,
 }
 
 /// Interaction mode.
 ///
-/// A terminal multiplexer cannot move the *inner* program's cursor, so `Jump` cannot reposition
-/// anything. It is therefore realized identically to `Select`: set the anchor, then select and copy
-/// the region. The distinction is preserved for status display and future use only.
+/// `Select` copies a two-point region. `Jump` returns one word-start target for the entry point to
+/// place through Herdr's `pane.copy_mode_jump`; it does not move the child program's caret.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Mode {
     Select,
@@ -118,7 +117,10 @@ impl App {
     }
 
     fn begin_search(&mut self, ch: char) {
-        let matches = self.buffer.find_char(ch);
+        let matches = match self.mode {
+            Mode::Jump => self.buffer.find_word_start_char(ch),
+            Mode::Select => self.buffer.find_char(ch),
+        };
         if matches.is_empty() {
             self.search = None;
             self.message = Some(format!("no match for '{ch}'"));
@@ -169,6 +171,9 @@ impl App {
     }
 
     fn resolve(&mut self, pos: Pos, is_end: bool) -> Outcome {
+        if self.mode == Mode::Jump {
+            return Outcome::Jump(pos);
+        }
         if is_end {
             let anchor = self
                 .anchor
@@ -380,5 +385,22 @@ mod tests {
         assert_eq!(a.handle_char('g'), Outcome::Continue);
         assert_eq!(a.input(), "");
         assert_eq!(a.message(), Some("no hint starts with g"));
+    }
+
+    #[test]
+    fn jump_is_one_word_start_pick_without_copy() {
+        let mut a = App::new(
+            WrappedBuffer::from_text("two three button test", None),
+            Theme::default(),
+            Mode::Jump,
+        );
+        assert_eq!(a.handle_char('t'), Outcome::Continue);
+        assert_eq!(a.labels().len(), 3); // excludes the mid-word 't' in "button"
+
+        let target = Pos::new(0, 4);
+        let hint = label_for(&a, target);
+        let outcome = feed(&mut a, &hint);
+        assert_eq!(outcome, Outcome::Jump(target));
+        assert_eq!(a.phase(), Phase::PickStart);
     }
 }

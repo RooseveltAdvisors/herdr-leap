@@ -1,7 +1,7 @@
 # herdr-leap
 
-A [Herdr](https://herdr.dev) plugin for **tmux-jump-style character hints** followed by
-select-to-copy of an arbitrary visible screen region.
+A [Herdr](https://herdr.dev) plugin for a **one-pick tmux-jump-style word-start jump** into the
+invoking pane's copy mode, plus Vim/fzf-aware smart pane navigation.
 
 ## Lineage and credit
 
@@ -10,15 +10,14 @@ The jump workflow is based on the UX established by
 “Vimium/Easymotion like navigation for tmux.” This Herdr port is not presented as an original UX
 invention. It adapts that lineage to Herdr's visible-buffer and plugin-pane APIs.
 
-Herdr cannot move the cursor inside an arbitrary program. After a hint chooses the anchor,
-herdr-leap therefore asks for an extent and copies the inclusive region via OSC 52. It does not
-pretend to reposition the underlying application's cursor.
+Herdr cannot move a cursor inside an arbitrary program. Leap instead places Herdr's copy-mode
+cursor through `pane.copy_mode_jump`; it does not inject keys into the child program.
 
 ## Actions
 
 | Action | Behavior |
 |---|---|
-| `RooseveltAdvisors.herdr-leap.open` | Open the jump/select-copy overlay |
+| `RooseveltAdvisors.herdr-leap.open` | Open the one-pick word-start copy-mode jump popup |
 | `RooseveltAdvisors.herdr-leap.smart-{left,down,up,right}` | One-shot Vim/fzf-aware pane navigation |
 
 Token extraction has moved to the separate
@@ -26,16 +25,16 @@ Token extraction has moved to the separate
 plugin. `RooseveltAdvisors.herdr-leap.extract` and the `extract` pane entrypoint were removed in
 v0.2.0. Bind `prefix+space` to `RooseveltAdvisors.herdr-extractor.extract`.
 
-## How jump/select-copy works
+## How Leap works
 
-1. The overlay reads only the focused pane's **visible** buffer and dims it.
-2. Type one search character. Lowercase searches match either case; uppercase is exact-case.
-3. Type a displayed hint to set the anchor.
-4. Type a second hint to set the extent. The inclusive region is copied with OSC 52.
-5. `Backspace` returns from extent selection to anchor selection. `Esc` or `Ctrl-C` cancels.
+1. A full-size popup reads the focused pane's unchanged **visible** buffer.
+2. Type one search character. Smartcase word starts receive hints.
+3. Type one hint. Herdr enters copy mode with its cursor at that captured cell.
 
-Rows that filled the visible pane width are treated as soft wraps and rejoined without a newline.
-Hard line boundaries remain newlines. Reversed selections are normalized automatically.
+The jump carries the visible read's revision and scroll offset. A stale viewport is refreshed only
+when its text and scroll position are unchanged; otherwise Leap refuses to drift. `Esc` or `Ctrl-C`
+cancels without touching the clipboard. Optional `mode = "select"` retains the two-pick OSC 52
+region-copy flow.
 
 ## Install
 
@@ -51,7 +50,7 @@ Recommended jump binding:
 key = "prefix+f"
 type = "plugin_action"
 command = "RooseveltAdvisors.herdr-leap.open"
-description = "tmux-jump-style select-copy"
+description = "tmux-jump-style copy-mode cursor"
 ```
 
 The action launcher validates `HERDR_BIN_PATH` before using it and falls back to `herdr` from
@@ -99,7 +98,7 @@ Create `config.toml` under `herdr plugin config-dir RooseveltAdvisors.herdr-leap
 
 ```toml
 search_chars = 1
-mode = "select" # or "jump"; both select and copy because Herdr cannot move an inner cursor
+mode = "jump" # default; "select" enables two-pick region copy
 copy_toast = true
 
 [style]

@@ -3,14 +3,14 @@
 `herdr-leap` is a Herdr plugin with a jump/select-copy overlay over the focused pane's **visible**
 buffer (`pane.read` `source = "visible"`), plus one-shot smart pane navigation:
 
-1. **Leap (`open` / entrypoint `leap`)** — a schasse/tmux-jump-inspired character jump followed by
-   select-to-copy of an arbitrary screen region (await-search → pick-start → pick-end).
+1. **Leap (`open` / entrypoint `leap`)** — a schasse/tmux-jump-inspired one-pick word-start jump
+   that places the invoking pane's copy-mode cursor. Optional `mode = "select"` retains region copy.
 2. **Smart nav (`smart-left` / `smart-down` / `smart-up` / `smart-right`)** — one-shot
    vim-tmux-navigator-style dispatch: if the focused pane's foreground process matches the
    editor/fzf predicate, `pane.send_keys` the matching Ctrl chord; otherwise
    `pane.focus_direction` in that direction. No overlay, no TUI.
 
-Leap emits OSC 52 for Herdr to forward. Extract belongs to the separate public
+Select mode emits OSC 52 for Herdr to forward; default jump mode never mutates the clipboard. Extract belongs to the separate public
 `RooseveltAdvisors.herdr-extractor` plugin; do not restore an extract action or pane here.
 Smart-nav must stay a one-shot path (no pane entrypoint).
 
@@ -26,8 +26,8 @@ Smart-nav must stay a one-shot path (no pane entrypoint).
   load-bearing leap module — keep it covered by unit tests.
 - `src/smart_nav.rs` owns pure smart-nav dispatch: direction vocabulary, editor/fzf predicate, and
   `decide()` → passthrough vs focus. Keep it covered by unit tests.
-- `src/app.rs` owns the leap state machine (`Phase::AwaitSearch | PickStart | PickEnd`),
-  hint input handling, and shared `Outcome` transitions (`Continue`, `Copy(String)`, `Cancel`).
+- `src/app.rs` owns hint input and `Outcome` transitions. Jump exits from `PickStart` with
+  `Jump(Pos)`; select mode continues through `PickEnd` and `Copy(String)`.
 - `src/hints.rs` generates unique, stable hint labels (`a`, `s`, … then fixed-width multi-char).
 - `src/ui.rs` renders the dimmed leap pane, the hint labels for the current phase, and a status line.
 - `src/theme.rs` owns the default TUI theme and user-configurable color parsing.
@@ -35,9 +35,8 @@ Smart-nav must stay a one-shot path (no pane entrypoint).
   `copy_toast`, optional `[style]`).
 - `scripts/open-leap` validates `HERDR_BIN_PATH` and falls back to `herdr` on `PATH`; this is
   required because a replaced running Linux server can expose a stale path ending in ` (deleted)`.
-- `src/herdr_client.rs` is the Herdr Unix-socket JSON-RPC client (`pane.read`, `pane.layout`,
-  `notification.show`, plus smart-nav `pane.process_info` / `pane.send_keys` /
-  `pane.focus_direction`).
+- `src/herdr_client.rs` is the Herdr Unix-socket JSON-RPC client (`pane.read`, `pane.get`,
+  `pane.copy_mode_jump`, `pane.layout`, `notification.show`, plus smart-nav methods).
 - `src/clipboard.rs` writes OSC 52.
 - `src/main.rs` is the thin entry point (`--mode leap|smart-nav`); keep leap logic, smart-nav
   dispatch, theming, clipboard, and socket logic in the library modules. Smart-nav must not
@@ -80,12 +79,12 @@ HERDR_LAB_HELPER=/opt/ra/firstmate/bin/fm-herdr-lab.sh ./scripts/lab-smart-nav.s
 ## Implementation Notes
 
 - Prefer Herdr's socket API over shelling out to `herdr` from the running binary.
-- Clipboard writes use OSC 52, not platform clipboard commands. Herdr forwards OSC 52 writes from
-  plugin panes to the foreground client.
+- Select-mode clipboard writes use OSC 52, not platform clipboard commands. Jump mode uses
+  `pane.copy_mode_jump` with the captured revision and scroll offset.
 - Keep the jump lineage credit to `schasse/tmux-jump` in README, LICENSE notes, and manifest
   metadata; do not present the UX as an original invention.
-- A multiplexer cannot move the inner program's cursor, so `mode = "jump"` is realized as
-  set-anchor-then-select-and-copy. Document this honestly; do not pretend to reposition a cursor.
+- Jump places Herdr's copy-mode cursor, not the inner program's caret. Keep Leap popup placement
+  full-size so capture does not resize the source viewport.
 - Region rendering must keep the original visible pane lines and must not change line widths.
 - Smart-nav personal `ctrl+h/j/k/l` bindings are documentation-only snippets; do not install them,
   commit captain dotfiles, or make them upstream Herdr defaults.

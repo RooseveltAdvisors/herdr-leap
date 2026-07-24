@@ -3,6 +3,8 @@
 //!
 //! No socket, TTY, or terminal state is touched here so every behavior is unit-testable.
 
+use unicode_width::UnicodeWidthChar;
+
 /// A position in the wrapped visible buffer: a visual row and a character column within that row.
 ///
 /// Ordering is row-major then column (derived from field order), which is exactly the order a
@@ -110,6 +112,54 @@ impl WrappedBuffer {
         hits
     }
 
+    /// Smartcase matches at ASCII word starts, without inventing a start at a soft wrap.
+    pub fn find_word_start_char(&self, needle: char) -> Vec<Pos> {
+        let case_sensitive = needle.is_uppercase();
+        let mut hits = Vec::new();
+        for (row, line) in self.rows.iter().enumerate() {
+            let chars: Vec<char> = line.chars().collect();
+            for (col, &ch) in chars.iter().enumerate() {
+                if !is_word_char(ch) || !smartcase_matches(ch, needle, case_sensitive) {
+                    continue;
+                }
+                let is_start = if col > 0 {
+                    !is_word_char(chars[col - 1])
+                } else if row > 0 && self.continues_prev[row] {
+                    self.rows[row - 1]
+                        .chars()
+                        .last()
+                        .map(|ch| !is_word_char(ch))
+                        .unwrap_or(true)
+                } else {
+                    true
+                };
+                if is_start {
+                    hits.push(Pos::new(row, col));
+                }
+            }
+        }
+        hits
+    }
+
+    /// Translate a character column to Herdr's terminal-cell viewport column.
+    pub fn viewport_col(&self, pos: Pos) -> u16 {
+        let width = self
+            .rows
+            .get(pos.row)
+            .map(|line| {
+                line.chars()
+                    .take(pos.col)
+                    .map(|ch| UnicodeWidthChar::width(ch).unwrap_or(0))
+                    .sum::<usize>()
+            })
+            .unwrap_or(0);
+        u16::try_from(width).unwrap_or(u16::MAX)
+    }
+
+    pub fn viewport_row(&self, pos: Pos) -> u16 {
+        u16::try_from(pos.row).unwrap_or(u16::MAX)
+    }
+
     /// The inclusive region from `a` to `b`, normalized so the smaller position is the start.
     ///
     /// - Same row: the characters in the inclusive column span `[start.col ..= end.col]`, clamped
@@ -161,6 +211,10 @@ fn smartcase_matches(ch: char, needle: char, case_sensitive: bool) -> bool {
     } else {
         ch == needle || ch.to_lowercase().eq(needle.to_lowercase())
     }
+}
+
+fn is_word_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || ch == '_'
 }
 
 #[cfg(test)]
@@ -310,5 +364,28 @@ mod tests {
     fn find_char_multibyte_does_not_panic() {
         let b = buf("あいあ");
         assert_eq!(b.find_char('あ'), vec![Pos::new(0, 0), Pos::new(0, 2)]);
+    }
+
+    #[test]
+    fn word_starts_respect_smartcase_and_soft_wraps() {
+        let b = WrappedBuffer::from_text("two Three button test targetword", Some(29));
+        assert_eq!(
+            b.find_word_start_char('t'),
+            vec![
+                Pos::new(0, 0),
+                Pos::new(0, 4),
+                Pos::new(0, 17),
+                Pos::new(0, 22),
+            ]
+        );
+        assert_eq!(b.find_word_start_char('T'), vec![Pos::new(0, 4)]);
+        assert!(b.find_word_start_char('w').is_empty());
+    }
+
+    #[test]
+    fn viewport_column_counts_terminal_cells() {
+        let b = buf("aあb");
+        assert_eq!(b.viewport_col(Pos::new(0, 2)), 3);
+        assert_eq!(b.viewport_row(Pos::new(7, 0)), 7);
     }
 }
